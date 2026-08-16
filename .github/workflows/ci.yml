@@ -117,8 +117,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
 
+      # Pinned: an unpinned `pnpm dlx publint` resolves whatever `latest` is on
+      # the day the job runs, so a new release can fail a build that changed
+      # nothing, or pass one an older release would have failed.
       - name: publint
-        run: pnpm dlx publint --strict
+        run: pnpm dlx publint@0.3.23 --strict
+
+      - name: Are the types wrong?
+        run: pnpm dlx @arethetypeswrong/cli@0.18.5 --pack --ignore-rules cjs-resolves-to-esm
 
       # A sibling package once published 1 of its 9 modules because `files` listed the
       # entry point literally. Assert every built module is actually shipped here too.
@@ -135,3 +141,20 @@ jobs:
             tar tzf "$tarball" | grep '^package/lib/' || true
             exit 1
           fi
+
+      # Prove the tarball works outside this repo's node_modules: the report
+      # command is the half of this package a reader runs by hand, and it must
+      # not need a profile, a harness, or anything from the dev tree.
+      - name: Install the packed tarball and run it
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          spool="$work/decisions.ocsf.jsonl"
+          cd "$work"
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund "$(ls /tmp/dsh-netguard-*.tgz)"
+          npx dsh-netguard report --spool "$spool" | tee out.txt
+          grep -q 'no spool at' out.txt
+          printf '%s\n' '{"time":1,"dst_endpoint":{"hostname":"example.com","port":443},"unmapped":{"dsh":{"verdict":"denied","kind":"fetch","enforced":true,"mode":"enforce","reason":"blocked-by-allowlist"}}}' > "$spool"
+          npx dsh-netguard report --spool "$spool" --suggest | tee suggest.txt
+          grep -q "  - 'example.com'" suggest.txt
