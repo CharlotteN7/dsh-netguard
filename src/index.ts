@@ -1,6 +1,6 @@
 /**
- * `dsh-netguard` — a host allowlist on harness-originated HTTP, enforced at
- * connect time.
+ * `dsh-netguard` — a host allowlist on the `web_fetch` and `web_search` tools,
+ * checked at connect time, refused only under `mode: enforce`.
  *
  * Four registrations:
  *
@@ -13,8 +13,9 @@
  * 3. `ctx.tools.guard()` — the parse-time arm, registered **unscoped** so it
  *    covers every agent, every `run_code` sub-call and every subagent child. It
  *    denies a `web_fetch` to a refused host before the provider is reached, it
- *    denies a `web_search` whose query names a refused host, and it is where
- *    the tool-call identity a provider never receives is minted.
+ *    denies a `web_search` whose query names a refused host, it records every
+ *    call it cannot turn into a target at all, and it is where the tool-call
+ *    identity a provider never receives is minted.
  * 4. `ctx.on('session/event')` — a read-only observer that keeps the
  *    `callId → { turn, step }` map. Nothing is ever appended to the session log.
  *

@@ -40,7 +40,10 @@ limits, described in README.md — not vulnerabilities:
 - images the DSH web UI renders from model-authored markdown: that request is made by the
   operator's browser, not by the agent's process;
 - audit mode letting a request through. Audit mode is not a control; it is the default and the
-  README says so in those words.
+  README says so in those words;
+- search result URLs reaching the model unfiltered when no `search.delegate` is configured: the
+  vendor provider the seam selected answers the seam directly, and only the outbound query
+  passes through this package.
 
 These do count, and we want to hear about them:
 
