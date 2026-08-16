@@ -62,7 +62,7 @@ describe('canonicalising a host', () => {
 
   it.each([
     ['::ffff:127.0.0.1', '127.0.0.1'],
-    ['::13.1.68.3', '13.1.68.3'],
+    ['::192.0.2.3', '192.0.2.3'],
     ['64:ff9b::192.0.2.33', '192.0.2.33'],
   ])('expands the trailing dotted quad of %s, which URL canonicalisation hides', (literal, expected) => {
     // `identifyHost` never sees this spelling — WHATWG URL rewrites it to hex
@@ -147,8 +147,8 @@ describe('the refused-address table', () => {
   })
 
   it('permits an ordinary public address', () => {
-    expect(refusedAddressClass(host('93.184.216.34'))).toBeUndefined()
-    expect(refusedAddressClass(host('[2606:2800:220:1:248:1893:25c8:1946]'))).toBeUndefined()
+    expect(refusedAddressClass(host('198.51.100.34'))).toBeUndefined()
+    expect(refusedAddressClass(host('[2001:db8::1]'))).toBeUndefined()
   })
 
   it('lets a deployment open a private range it names', () => {

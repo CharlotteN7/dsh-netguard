@@ -60,14 +60,14 @@ describe('the record', () => {
 
   it('carries the destination endpoint verbatim and the URL only as a digest', () => {
     const built = record({
-      resolvedIp: '93.184.216.34',
+      resolvedIp: '198.51.100.34',
       attributes: { url_digest: 'hmac-sha256:abcd', url_length: 42, has_query: true },
     })
 
     expect(built['dst_endpoint']).toEqual({
       hostname: 'example.com',
       port: 443,
-      ip: '93.184.216.34',
+      ip: '198.51.100.34',
       svc_name: 'https',
     })
     expect(JSON.stringify(built)).not.toContain('https://example.com/secret')
@@ -133,9 +133,9 @@ describe('the record', () => {
   })
 
   it('lists the host and the resolved address as observables', () => {
-    expect(record({ resolvedIp: '93.184.216.34' })['observables']).toEqual([
+    expect(record({ resolvedIp: '198.51.100.34' })['observables']).toEqual([
       { name: 'dst_endpoint.hostname', type_id: 1, value: 'example.com' },
-      { name: 'dst_endpoint.ip', type_id: 2, value: '93.184.216.34' },
+      { name: 'dst_endpoint.ip', type_id: 2, value: '198.51.100.34' },
     ])
     expect(record()['observables']).toHaveLength(1)
   })
