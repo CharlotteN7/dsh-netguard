@@ -37,7 +37,7 @@ describe('the pattern grammar', () => {
 
   it('matches everything under a bare star', () => {
     expect(matches('*', 'anything.example')).toBe(true)
-    expect(matches('*', '93.184.216.34')).toBe(true)
+    expect(matches('*', '198.51.100.34')).toBe(true)
   })
 
   it('never lets a wildcard match an IP address', () => {
@@ -86,6 +86,11 @@ describe('patterns the compiler refuses', () => {
     ['a prefix wildcard', 'prod*.blob.core.windows.net', /wildcard inside a label/],
     ['a suffix wildcard', 'example.*', /wildcard inside a label/],
     ['a mid-label wildcard', 'a*b.example.com', /wildcard inside a label/],
+    // A second wildcard used to compile to a base no host can end with, so the
+    // pattern matched nothing at all — silent in an allow list, a hole in a deny list.
+    ['an interior wildcard behind *.', '*.*.internal.example', /wildcard inside a label/],
+    ['an interior wildcard behind **.', '**.*.internal.example', /wildcard inside a label/],
+    ['a trailing wildcard label', '*.internal.*', /wildcard inside a label/],
     ['a wildcard over a top-level domain', '*.com', /top-level domain/],
     ['a double-star over a top-level domain', '**.com', /top-level domain/],
     ['a wildcard over a public suffix', '*.co.uk', /public suffix/],
@@ -129,6 +134,10 @@ describe('evaluating a policy', () => {
       reason: 'blocked-by-denylist',
       rule: 'deny:secrets.example.com',
     })
+  })
+
+  it('refuses an interior wildcard in a deny list instead of compiling a rule that matches nothing', () => {
+    expect(() => HostPolicy.compile(['*'], ['*.*.internal.example'])).toThrow(/wildcard inside a label/)
   })
 
   it('lets a deny pattern win over the bare star', () => {

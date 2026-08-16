@@ -99,8 +99,20 @@ function parsePort(text: string, source: string): number {
   return port
 }
 
+/** The refusal every wildcard inside a label produces, wherever it is written. */
+function interiorWildcard(source: string): PolicyError {
+  return new PolicyError(
+    `"${source}" puts a wildcard inside a label; only a leading *. or **. is accepted, because a prefix`
+    + ' wildcard over a self-service namespace matches names an attacker can register',
+  )
+}
+
 /** Validate the base of a wildcard pattern, which must be a name of at least two labels. */
 function wildcardBase(raw: string, source: string): string {
+  // A second wildcard in the remainder compiles to a base no host can ever end
+  // with, so the pattern matches nothing: silent in an allow list, a hole in a
+  // deny list.
+  if (raw.includes('*')) throw interiorWildcard(source)
   const identity = identifyHost(raw)
   if (identity === undefined) throw new PolicyError(`"${source}" does not name a host`)
   if (identity.kind !== 'name') {
@@ -145,12 +157,7 @@ export function parseHostPattern(raw: string, options: { readonly allowAny: bool
   if (host.startsWith('*.')) {
     return withPort({ source, kind: 'subdomains', base: wildcardBase(host.slice(2), source) })
   }
-  if (host.includes('*')) {
-    throw new PolicyError(
-      `"${source}" puts a wildcard inside a label; only a leading *. or **. is accepted, because a prefix`
-      + ' wildcard over a self-service namespace matches names an attacker can register',
-    )
-  }
+  if (host.includes('*')) throw interiorWildcard(source)
   const identity = identifyHost(host)
   if (identity === undefined) throw new PolicyError(`"${source}" does not name a host`)
   return withPort({ source, kind: 'exact', base: identity.key })
