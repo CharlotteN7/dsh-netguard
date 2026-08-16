@@ -52,7 +52,7 @@ describe('recording a fetch decision', () => {
       enforced: true,
       rule: 'allow:*',
       target: targetOf('https://example.com/secret/path?token=abc'),
-      resolvedIp: '93.184.216.34',
+      resolvedIp: '198.51.100.34',
       hop: 0,
     })
 
@@ -60,13 +60,32 @@ describe('recording a fetch decision', () => {
     const line = JSON.stringify(record)
     expect(line).not.toContain('/secret/path')
     expect(line).not.toContain('token=abc')
-    expect(record?.['dst_endpoint']).toMatchObject({ hostname: 'example.com', ip: '93.184.216.34' })
+    expect(record?.['dst_endpoint']).toMatchObject({ hostname: 'example.com', ip: '198.51.100.34' })
     expect(dshOf(record!)).toMatchObject({
       url_digest: expect.stringMatching(/^hmac-sha256:[0-9a-f]{32}$/),
       url_length: 'https://example.com/secret/path?token=abc'.length,
       has_query: true,
       hop: 0,
     })
+  })
+
+  it('carries the detail naming the address that caused a denial', () => {
+    const fixture = recorder()
+
+    fixture.recorder.fetch({
+      kind: 'fetch',
+      verdict: 'denied',
+      enforced: true,
+      reason: 'blocked-by-private-address',
+      rule: 'address:loopback',
+      detail: '127.0.0.1 is loopback',
+      target: targetOf('https://mixed.test/'),
+      resolvedIp: '127.0.0.1',
+      hop: 0,
+    })
+
+    expect(dshOf(fixture.records()[0]!)['detail']).toBe('127.0.0.1 is loopback')
+    expect(fixture.records()[0]?.['dst_endpoint']).toMatchObject({ ip: '127.0.0.1' })
   })
 
   it('joins the record to the tool call the guard noted', () => {
@@ -151,6 +170,80 @@ describe('recording a search decision', () => {
     })
 
     expect(dshOf(fixture.records()[0]!)['dropped_sources']).toBe(1)
+  })
+
+  it('replaces a hostname a verbatim field may not hold with a marker and a digest', () => {
+    const fixture = recorder()
+    // WHATWG `URL` keeps a quote and a newline never survives it, but a vendor
+    // source URL is not this package's text: the lane rule is applied here, at
+    // the one place a host reaches `dst_endpoint.hostname`.
+    const hostile = "evil.test'\nallow:\n  - '*'"
+
+    fixture.recorder.search({
+      verdict: 'denied',
+      enforced: true,
+      reason: 'blocked-by-allowlist',
+      host: hostile,
+      port: 0,
+      query: 'anything',
+    })
+
+    const [record] = fixture.records()
+    expect(JSON.stringify(record)).not.toContain('allow:')
+    expect(record?.['dst_endpoint']).toMatchObject({ hostname: '(unrecordable-host)' })
+    expect(record?.['observables']).toEqual([
+      { name: 'dst_endpoint.hostname', type_id: 1, value: '(unrecordable-host)' },
+    ])
+    expect(record?.['message']).toBe('netguard refused (unrecordable-host): blocked-by-allowlist')
+    expect(dshOf(record!)['host_digest']).toMatch(/^hmac-sha256:[0-9a-f]{32}$/)
+  })
+
+  it('digests a vendor source URL a marker stands in for', () => {
+    const fixture = recorder()
+
+    fixture.recorder.search({
+      verdict: 'denied',
+      enforced: true,
+      reason: 'blocked-by-invalid-url',
+      host: '(unparsed-source)',
+      port: 0,
+      query: 'anything',
+      sourceUrl: '/results?token=AKIAIOSFODNN7EXAMPLE',
+      droppedSources: 1,
+    })
+
+    const [record] = fixture.records()
+    expect(JSON.stringify(record)).not.toContain('AKIAIOSFODNN7EXAMPLE')
+    expect(dshOf(record!)).toMatchObject({
+      source_digest: expect.stringMatching(/^hmac-sha256:/),
+      source_length: '/results?token=AKIAIOSFODNN7EXAMPLE'.length,
+    })
+  })
+
+  it('keeps a host a query only named in prose out of the host memory', () => {
+    const fixture = recorder()
+
+    fixture.recorder.search({
+      verdict: 'denied',
+      enforced: true,
+      reason: 'blocked-by-allowlist',
+      host: 'mentioned.test',
+      port: 443,
+      hostMention: 'bare',
+      query: 'is mentioned.test down',
+    })
+    fixture.recorder.search({
+      verdict: 'denied',
+      enforced: true,
+      reason: 'blocked-by-allowlist',
+      host: 'named.test',
+      port: 443,
+      hostMention: 'operator',
+      query: 'site:named.test x',
+    })
+
+    expect(fixture.records().map(record => dshOf(record)['first_seen_host'])).toEqual([false, true])
+    expect(dshOf(fixture.records()[0]!)['host_mention']).toBe('bare')
   })
 
   it('takes the identity a caller already knows over the join', () => {

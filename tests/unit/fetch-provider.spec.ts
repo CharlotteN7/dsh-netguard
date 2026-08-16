@@ -476,6 +476,23 @@ describe('connect-time enforcement', () => {
     expect(fixture.requests).toEqual(['/one'])
   })
 
+  it('names the address that caused the denial, not the first one the resolver returned', async () => {
+    // The record that exists to catch a rebinding has to point at the endpoint
+    // that was refused; `addresses[0]` is the one that was fine.
+    const guard = provider(
+      { allow: ['mixed.test'] },
+      async () => [{ address: '203.0.113.7', family: 4 }, { address: '169.254.169.254', family: 4 }],
+    )
+
+    await expect(guard.fetch.fetch({ url: 'http://mixed.test/' })).rejects.toThrow(/blocked-by-private-address/)
+    expect(guard.observations.at(-1)).toMatchObject({
+      verdict: 'denied',
+      rule: 'address:cloud-metadata',
+      resolvedIp: '169.254.169.254',
+      detail: '169.254.169.254 is cloud-metadata',
+    })
+  })
+
   it('reports a resolver failure as a provider error', async () => {
     const guard = provider({ allow: ['broken.test'] }, async () => { throw new Error('SERVFAIL') })
 

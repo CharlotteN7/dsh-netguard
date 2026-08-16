@@ -89,6 +89,19 @@ describe('resolving the deployment configuration', () => {
     expect(resolvePolicy(base({ fetch: { maxRedirects: 0 } })).fetch.maxRedirects).toBe(0)
   })
 
+  it.each([
+    ['spoolPath', { spoolPath: 'netguard.ocsf.jsonl' }],
+    ['hostMemoryPath', { hostMemoryPath: 'netguard.hosts' }],
+    ['fleet.installUidPath', { fleet: { installUidPath: 'netguard.install-uid' } }],
+  ])('refuses a relative %s, which would resolve inside the workspace', (name, overrides) => {
+    expect(() => resolvePolicy(base(overrides))).toThrow(new RegExp(`${name.replace('.', '\\.')} must be an absolute path`))
+  })
+
+  it('refuses a non-positive search.maxQueryLength', () => {
+    expect(() => resolvePolicy(base({ search: { maxQueryLength: 0 } }))).toThrow(/search.maxQueryLength must be a positive/)
+    expect(resolvePolicy(base()).searchMaxQueryLength).toBe(2048)
+  })
+
   it('needs both halves of a search delegate, or neither', () => {
     expect(() => resolvePolicy(base({ search: { delegate: { module: 'x' } } }))).toThrow(/naming the provider class/)
     expect(() => resolvePolicy(base({ search: { delegate: { export: 'X' } } }))).toThrow(/needs search.delegate.module/)
@@ -143,6 +156,43 @@ describe('the install uid', () => {
     writeFileSync(path, '\n')
 
     expect(readOrCreateInstallUid(path)).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('is minted in memory rather than failing the mount when it cannot be persisted', () => {
+    // The spool directory is not always writable, and refusing to mount over it
+    // is the outage `SpoolSink.write` deliberately refuses to cause.
+    const unwritable = join(home, 'blocked')
+    writeFileSync(unwritable, 'a file where a directory would have to be\n')
+    const failures: unknown[] = []
+
+    const uid = readOrCreateInstallUid(join(unwritable, 'install-uid'), error => failures.push(error))
+
+    expect(uid).toMatch(/^[0-9a-f-]{36}$/)
+    expect(failures).toHaveLength(1)
+  })
+
+  it('reports a spool this process cannot write to, and still resolves a policy', () => {
+    const unwritable = join(home, 'blocked-2')
+    writeFileSync(unwritable, 'a file where a directory would have to be\n')
+    const failures: unknown[] = []
+
+    const policy = resolvePolicy(
+      { spoolPath: join(unwritable, 'spool.jsonl') },
+      undefined,
+      process.env,
+      error => failures.push(error),
+    )
+
+    expect(policy.fleet.installUid).toMatch(/^[0-9a-f-]{36}$/)
+    expect(failures).toHaveLength(1)
+  })
+
+  it('drops the failure when no caller asked to hear about it', () => {
+    const unwritable = join(home, 'blocked-3')
+    writeFileSync(unwritable, 'a file where a directory would have to be\n')
+
+    expect(readOrCreateInstallUid(join(unwritable, 'install-uid'))).toMatch(/^[0-9a-f-]{36}$/)
+    expect(resolvePolicy({ spoolPath: join(unwritable, 'spool.jsonl') }).fleet.installUid).toMatch(/^[0-9a-f-]{36}$/)
   })
 
   it('is taken from the configuration when a deployment supplies one', () => {

@@ -72,7 +72,7 @@ describe('hosts named in a query', () => {
   })
 
   it('ignores a bare IP address, which is a version number far more often than a target', () => {
-    expect(hostsNamedIn('upgrade to 1.2.3.4 today')).toEqual([])
+    expect(hostsNamedIn('upgrade to 192.0.2.4 today')).toEqual([])
   })
 
   it('does not throw on text that looks like a URL and is not', () => {
@@ -81,6 +81,58 @@ describe('hosts named in a query', () => {
 
   it('ignores a URL that names no host at all', () => {
     expect(hostsNamedIn('file:///etc/passwd')).toEqual([])
+  })
+
+  it.each([
+    'how to fix a TypeError in index.js',
+    'vitest config for node.js 22',
+    'what should go in readme.md',
+    'best practices for main.py imports',
+    'asp.net core middleware ordering',
+    'difference between vue.js and react',
+    'kubernetes ingress tls',
+    'error 3.11 python setup.py install failed',
+    'convert file.tar.gz to zip',
+  ])('reads no host in %j, which is a filename, not a destination', (query) => {
+    expect(hostsNamedIn(query)).toEqual([])
+  })
+
+  it('still reads a host out of prose when its top-level domain is a real one', () => {
+    expect(hostsNamedIn('compare github.com and gitlab.com').map(entry => entry.identity.key))
+      .toEqual(['github.com', 'gitlab.com'])
+  })
+
+  it('says how the query named each host, so a word in prose is not treated as a destination', () => {
+    expect(hostsNamedIn('site:one.test https://two.test/x and three.test')
+      .map(entry => [entry.identity.key, entry.mention]))
+      .toEqual([['two.test', 'url'], ['one.test', 'operator'], ['three.test', 'bare']])
+  })
+
+  it('reads the host out of a site: operator that carries a path or a port', () => {
+    expect(hostsNamedIn('site:evil.test/a?b=1 secret')[0]?.identity.key).toBe('evil.test')
+    expect(hostsNamedIn('inurl:evil.test:8443 secret')[0]?.identity.key).toBe('evil.test')
+  })
+
+  it.each([
+    ['a single label', 'site:localhost x'],
+    ['an over-long label', `site:${'a'.repeat(64)}.test x`],
+    ['a name past the DNS length limit', `site:${`${'a'.repeat(60)}.`.repeat(5)}test x`],
+    ['a label that is not a label', 'site:-a.test x'],
+    ['nothing at all', 'site: x'],
+  ])('reads no host from a site: operator naming %s', (_label, query) => {
+    expect(hostsNamedIn(query)).toEqual([])
+  })
+
+  it('scans a query the model padded without blocking the event loop', () => {
+    // 300 KB of the shape that took 23 seconds through the old nested-quantifier
+    // pattern. The cap denies it before this ever runs; the scanner still has to
+    // be linear for the queries under the cap.
+    const padded = 'a'.repeat(150_000) + '.' + 'a-'.repeat(75_000) + '!'
+    const started = process.hrtime.bigint()
+
+    hostsNamedIn(padded)
+
+    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(1_000)
   })
 })
 
@@ -91,13 +143,21 @@ describe('deciding a query', () => {
 
   it('refuses a query naming a denied host, and reports the rule', () => {
     expect(checkQuery('site:evil.test password', policyOf(home, { allow: ['*'], deny: ['evil.test'] })))
-      .toEqual({ host: 'evil.test', port: 443, reason: 'blocked-by-denylist', rule: 'deny:evil.test' })
+      .toEqual({ host: 'evil.test', port: 443, reason: 'blocked-by-denylist', rule: 'deny:evil.test', mention: 'operator' })
   })
 
   it('passes over an allowed host to report the refused one behind it', () => {
     const policy = policyOf(home, { allow: ['good.test'] })
 
     expect(checkQuery('good.test and evil.test', policy)).toMatchObject({ host: 'evil.test' })
+  })
+
+  it('refuses a query past the configured length rather than scanning it', () => {
+    const capped = policyOf(home, { allow: ['*'], search: { maxQueryLength: 64 } })
+
+    expect(checkQuery('a'.repeat(65), capped))
+      .toEqual({ host: '(query)', port: 0, reason: 'blocked-by-query-length' })
+    expect(checkQuery('a'.repeat(64), capped)).toBeUndefined()
   })
 
   it('refuses a query naming a host the allow list does not cover', () => {
@@ -126,12 +186,19 @@ describe('filtering result sources', () => {
       .toMatchObject({ rule: 'deny:bad.test', reason: 'blocked-by-denylist' })
   })
 
-  it('drops a source whose URL does not parse rather than passing it through', () => {
-    expect(partitionSources([{ url: 'not a url' }], policy).dropped).toHaveLength(1)
+  it('drops a source whose URL does not parse, and reports a marker rather than the vendor\'s string', () => {
+    const injected = "/results?token=SECRET\nallow:\n  - '*'"
+
+    const { dropped } = partitionSources([{ url: injected }], policy)
+
+    expect(dropped).toHaveLength(1)
+    expect(dropped[0]).toMatchObject({ host: '(unparsed-source)', reason: 'blocked-by-invalid-url' })
+    expect(JSON.stringify(dropped[0]?.host)).not.toContain('SECRET')
   })
 
   it('drops a source whose URL parses but names no host', () => {
-    expect(partitionSources([{ url: 'file:///etc/passwd' }], policy).dropped).toHaveLength(1)
+    expect(partitionSources([{ url: 'file:///etc/passwd' }], policy).dropped[0])
+      .toMatchObject({ host: '(unparsed-source)', reason: 'blocked-by-scheme' })
   })
 })
 
@@ -151,6 +218,27 @@ describe('the guarded search provider', () => {
     await expect(guard.search.search({ query: 'site:evil.test token' })).rejects.toThrow(/blocked-by-denylist/)
     expect(vendor.queries).toEqual([])
     expect(guard.observations[0]).toMatchObject({ verdict: 'denied', host: 'evil.test' })
+  })
+
+  it('refuses a query past the cap without a host to name', async () => {
+    const vendor = delegate({ sources: [], truncated: false })
+    const guard = provider({ allow: ['*'], search: { maxQueryLength: 32 } }, vendor)
+
+    await expect(guard.search.search({ query: 'a'.repeat(33) })).rejects.toThrow(/blocked-by-query-length/)
+    expect(vendor.queries).toEqual([])
+    expect(guard.observations[0]).toMatchObject({ verdict: 'denied', host: '(query)' })
+    expect(guard.observations[0]?.hostMention).toBeUndefined()
+  })
+
+  it('reports a source URL it could not parse as a marker, and hands the text over to be digested', async () => {
+    const injected = "/results?token=SECRET\nallow:\n  - '*'"
+    const vendor = delegate({ sources: [{ url: injected }, { url: 'https://good.test/a' }], truncated: false })
+    const guard = provider({ allow: ['good.test'] }, vendor)
+
+    const result = await guard.search.search({ query: 'harmless' })
+
+    expect(result.sources.map(source => source.url)).toEqual(['https://good.test/a'])
+    expect(guard.observations.at(-1)).toMatchObject({ host: '(unparsed-source)', sourceUrl: injected })
   })
 
   it('sends a clean query on and records it as allowed', async () => {

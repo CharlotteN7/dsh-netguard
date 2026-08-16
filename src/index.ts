@@ -34,10 +34,10 @@ import { CallCorrelator, TargetCorrelator, type CallIdentity } from './correlate
 import { GuardedFetchProvider, type Resolver } from './fetch-provider.ts'
 import { createEnvironment } from './ocsf.ts'
 import { loadRepoPolicy, resolvePolicy, type Config, type RepoPolicy } from './policy.ts'
-import { digestQuery, digestUrl } from './privacy.ts'
-import { assertSelectable, readSeamState } from './mount.ts'
+import { digest, digestQuery, digestUrl, HOST_MARKERS } from './privacy.ts'
+import { assertPinnedProviderUsable, assertSelectable, readSeamState } from './mount.ts'
 import { Recorder } from './recorder.ts'
-import { denialMessage } from './reasons.ts'
+import { argumentDenialMessage, denialMessage } from './reasons.ts'
 import { checkQuery, GuardedSearchProvider, loadSearchDelegate } from './search-provider.ts'
 import { HostMemory, SpoolSink } from './sink.ts'
 
@@ -133,16 +133,31 @@ function identityOf(exec: ToolExecution, calls: CallCorrelator): CallIdentity {
   }
 }
 
-/** The `url` argument of a `web_fetch` call, when the model supplied one. */
-function urlArgument(exec: ToolExecution): string | undefined {
-  const args = exec.arguments as { url?: unknown } | null | undefined
-  return typeof args?.url === 'string' ? args.url : undefined
-}
+/** What a tool call supplied as one of its string arguments. */
+export type ToolArgument =
+  | { readonly kind: 'string'; readonly value: string }
+  /** The key is missing or `undefined`: the call names no target at all. */
+  | { readonly kind: 'absent' }
+  /** Present, but not a string — an array, an object with a `toString`, a number, `null`. */
+  | { readonly kind: 'other'; readonly type: string }
 
-/** The `query` argument of a `web_search` call, when the model supplied one. */
-function queryArgument(exec: ToolExecution): string | undefined {
-  const args = exec.arguments as { query?: unknown } | null | undefined
-  return typeof args?.query === 'string' ? args.query : undefined
+/**
+ * Read one string argument of a tool call.
+ *
+ * Tool arguments are model-authored JSON, which is a wire boundary: the key can
+ * hold any JSON value. A non-string one used to skip the guard entirely, which
+ * is a hole exactly where a model that wants to avoid the guard would write.
+ * @param exec - the tool execution the guard was handed.
+ * @param name - the argument to read.
+ * @returns the string, its absence, or the type that was there instead.
+ */
+export function stringArgument(exec: ToolExecution, name: string): ToolArgument {
+  const args = exec.arguments as Record<string, unknown> | null | undefined
+  const value = args?.[name]
+  if (typeof value === 'string') return { kind: 'string', value }
+  if (value === undefined) return { kind: 'absent' }
+  if (value === null) return { kind: 'other', type: 'null' }
+  return { kind: 'other', type: Array.isArray(value) ? 'array' : typeof value }
 }
 
 /** Options `apply` accepts beyond `Config`, so tests can drive name resolution. */
@@ -159,15 +174,21 @@ export interface ApplyOptions {
  * @throws Error when the composition would leave this plugin's providers unselectable.
  */
 export function apply(ctx: Context, config: Config, options: ApplyOptions = {}): void {
-  const policy = resolvePolicy(config, loadConfiguredPolicy(ctx, config.policyFile))
+  const onFailure = (error: unknown): void => { report(ctx, `dsh-netguard: audit sink write failed: ${String(error)}`) }
+  const policy = resolvePolicy(config, loadConfiguredPolicy(ctx, config.policyFile), process.env, onFailure)
   if (policy.fetch.enabled) {
     assertSelectable('fetch', readSeamState(ctx.web, 'fetchProviders', 'fetchProviderId', policy.fetchProviderId), policy.fetchProviderId)
   }
-  if (policy.searchEnabled && policy.searchDelegate !== undefined) {
-    assertSelectable('search', readSeamState(ctx.web, 'searchProviders', 'searchProviderId', policy.searchProviderId), policy.searchProviderId)
+  if (policy.searchEnabled) {
+    const state = readSeamState(ctx.web, 'searchProviders', 'searchProviderId', policy.searchProviderId)
+    // Without a delegate this package's search provider reports itself
+    // unusable, so it cannot make the seam ambiguous — but a profile that
+    // pinned it would then fail every search at call time instead of failing
+    // here.
+    if (policy.searchDelegate === undefined) assertPinnedProviderUsable('search', state, policy.searchProviderId)
+    else assertSelectable('search', state, policy.searchProviderId)
   }
 
-  const onFailure = (error: unknown): void => { report(ctx, `dsh-netguard: audit sink write failed: ${String(error)}`) }
   const sink = new SpoolSink(policy.spoolPath, onFailure)
   const memory = new HostMemory(policy.hostMemoryPath, onFailure)
   const calls = new CallCorrelator()
@@ -215,23 +236,45 @@ export function apply(ctx: Context, config: Config, options: ApplyOptions = {}):
   /**
    * The parse-time arm for `web_fetch`.
    *
-   * It always mints the tool-call join the provider cannot see. It records a
-   * decision only when it is the arm that decided the request: an enforced
-   * denial here means the provider never runs, and a deployment that turned the
-   * provider off leaves this as the only arm there is. Otherwise the provider
-   * owns the record, so the same request is not spooled twice.
+   * It always mints the tool-call join the provider cannot see, and it always
+   * produces a record: a `url` argument that is not a string, and one that is
+   * not a URL, are recorded against a marker rather than skipped, because a
+   * request the guard cannot decide is exactly what an audit lane must not
+   * lose. It records a *policy* decision only when it is the arm that decided
+   * the request: an enforced denial here means the provider never runs, and a
+   * deployment that turned the provider off leaves this as the only arm there
+   * is. Otherwise the provider owns the record, so the same request is not
+   * spooled twice.
    */
   function guardFetch(exec: ToolExecution): string | undefined {
-    const raw = urlArgument(exec)
-    if (raw === undefined) return undefined
+    const enforced = policy.mode === 'enforce'
+    const argument = stringArgument(exec, 'url')
+    // An absent argument names no target and opens no socket; the tool's own
+    // schema is what reports it.
+    if (argument.kind === 'absent') return undefined
     const identity = identityOf(exec, calls)
+    if (argument.kind === 'other') {
+      recorder.guard(
+        { verdict: 'denied', enforced, reason: 'blocked-by-invalid-argument', host: HOST_MARKERS.nonString, port: 0 },
+        identity,
+        { hop: 0, url_type: argument.type },
+      )
+      if (!enforced) return undefined
+      return argumentDenialMessage('blocked-by-invalid-argument', `the url argument is a ${argument.type}, not a string`)
+    }
+    const raw = argument.value
     targets.note(raw, identity)
     const checked = checkUrl(raw, policy)
-    // A URL this package cannot parse is the tool's own argument error to
-    // report; denying it here would replace a precise message with a vague one.
-    if (checked.kind === 'invalid') return undefined
+    if (checked.kind === 'invalid') {
+      recorder.guard(
+        { verdict: 'denied', enforced, reason: checked.reason, host: HOST_MARKERS.unparsedUrl, port: 0 },
+        identity,
+        { hop: 0, url_digest: digest(policy.hmacKey, raw), url_length: raw.length },
+      )
+      if (!enforced) return undefined
+      return argumentDenialMessage(checked.reason, checked.detail)
+    }
     targets.note(checked.target.url.toString(), identity)
-    const enforced = policy.mode === 'enforce'
     const denied = checked.decision.kind === 'deny'
     const guardOwnsRecord = !policy.fetch.enabled || (denied && enforced)
     if (guardOwnsRecord) {
@@ -263,12 +306,22 @@ export function apply(ctx: Context, config: Config, options: ApplyOptions = {}):
    * because then it is the only arm this package has on the search path.
    */
   function guardSearch(exec: ToolExecution): string | undefined {
-    const query = queryArgument(exec)
-    if (query === undefined) return undefined
+    const enforced = policy.mode === 'enforce'
+    const argument = stringArgument(exec, 'query')
+    if (argument.kind === 'absent') return undefined
     const identity = identityOf(exec, calls)
+    if (argument.kind === 'other') {
+      recorder.guard(
+        { verdict: 'denied', enforced, reason: 'blocked-by-invalid-argument', host: HOST_MARKERS.nonString, port: 0 },
+        identity,
+        { query_type: argument.type },
+      )
+      if (!enforced) return undefined
+      return argumentDenialMessage('blocked-by-invalid-argument', `the query argument is a ${argument.type}, not a string`)
+    }
+    const query = argument.value
     targets.note(query, identity)
     const refused = checkQuery(query, policy)
-    const enforced = policy.mode === 'enforce'
     if (policy.searchDelegate === undefined || (refused !== undefined && enforced)) {
       const digested = digestQuery(policy.hmacKey, query)
       recorder.guard(
@@ -277,11 +330,16 @@ export function apply(ctx: Context, config: Config, options: ApplyOptions = {}):
           enforced,
           ...refused === undefined ? {} : { reason: refused.reason },
           ...refused?.rule === undefined ? {} : { rule: refused.rule },
-          host: refused?.host ?? '(query)',
+          host: refused?.host ?? HOST_MARKERS.query,
           port: refused?.port ?? 0,
         },
         identity,
-        { query_digest: digested.digest, query_length: digested.length },
+        {
+          query_digest: digested.digest,
+          query_length: digested.length,
+          ...refused?.mention === undefined ? {} : { host_mention: refused.mention },
+        },
+        { remember: refused?.mention !== 'bare' },
       )
     }
     if (refused === undefined || !enforced) return undefined

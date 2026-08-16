@@ -124,6 +124,23 @@ describe('the composition check', () => {
     expect(plugin.fetchProviders().has('dsh-netguard')).toBe(false)
   })
 
+  it('fails loud when the profile pinned this package\'s search provider and configured no delegate', async () => {
+    // It mounts cleanly and then fails every web_search, which is exactly the
+    // half-working start the composition check exists to prevent.
+    const plugin = await mount({}, { webConfig: { searchProvider: 'dsh-netguard' } })
+
+    expect(plugin.mounted).toThrow(/no search.delegate is configured/)
+  })
+
+  it('mounts when the pin names this package and a delegate makes it usable', async () => {
+    const plugin = await mount(
+      { search: { delegate: { module: 'x', export: 'X' } } },
+      { webConfig: { searchProvider: 'dsh-netguard' } },
+    )
+
+    expect(plugin.mounted).not.toThrow()
+  })
+
   it('checks the search seam only once a delegate makes this package usable', async () => {
     const withoutDelegate = await mount({}, { webConfig: { searchProvider: 'deepseek-official' } })
     expect(withoutDelegate.mounted).not.toThrow()
@@ -165,13 +182,53 @@ describe('the tool-tier guard', () => {
     expect(plugin.records()).toEqual([])
   })
 
-  it('abstains when the call carries no url or query', async () => {
+  it('abstains when the call carries no url or query at all', async () => {
     const plugin = await mount({ mode: 'enforce' })
     plugin.mounted()
 
     expect(plugin.guards[0]?.(execution('web_fetch', {}))).toBeUndefined()
-    expect(plugin.guards[0]?.(execution('web_search', { query: 7 }))).toBeUndefined()
+    expect(plugin.guards[0]?.(execution('web_search', {}))).toBeUndefined()
     expect(plugin.records()).toEqual([])
+  })
+
+  it.each([
+    ['an array', ['https://evil.test/']],
+    ['an object with a toString', { toString: () => 'https://evil.test/' }],
+    ['a number', 12_345],
+    ['null', null],
+  ])('denies and records a url argument that is %s', async (_label, value) => {
+    const plugin = await mount({ mode: 'enforce', allow: [], fetch: { enabled: false } })
+    plugin.mounted()
+
+    const reason = plugin.guards[0]?.(execution('web_fetch', { url: value }))
+
+    expect(reason).toContain('blocked-by-invalid-argument')
+    expect(plugin.records()).toHaveLength(1)
+    expect(plugin.records()[0]?.['dst_endpoint']).toMatchObject({ hostname: '(non-string-argument)' })
+    expect(dshOf(plugin.records()[0]!)).toMatchObject({ verdict: 'denied', reason: 'blocked-by-invalid-argument' })
+    expect(JSON.stringify(plugin.records()[0])).not.toContain('evil.test')
+  })
+
+  it('denies and records a query argument that is not a string', async () => {
+    const plugin = await mount({ mode: 'enforce', allow: [] })
+    plugin.mounted()
+
+    const reason = plugin.guards[0]?.(execution('web_search', { query: 7 }))
+
+    expect(reason).toContain('the query argument is a number, not a string')
+    expect(dshOf(plugin.records()[0]!)).toMatchObject({ verdict: 'denied', query_type: 'number' })
+  })
+
+  it('records an unusable argument in audit mode and refuses nothing', async () => {
+    const plugin = await mount({ mode: 'audit', allow: [], fetch: { enabled: false } })
+    plugin.mounted()
+
+    expect(plugin.guards[0]?.(execution('web_fetch', { url: ['https://evil.test/'] }))).toBeUndefined()
+    expect(plugin.guards[0]?.(execution('web_fetch', { url: 'not a url' }))).toBeUndefined()
+    expect(plugin.guards[0]?.(execution('web_search', { query: 7 }))).toBeUndefined()
+    expect(plugin.records().map(record => dshOf(record)['reason']))
+      .toEqual(['blocked-by-invalid-argument', 'blocked-by-invalid-url', 'blocked-by-invalid-argument'])
+    expect(plugin.records().every(record => dshOf(record)['enforced'] === false)).toBe(true)
   })
 
   it('denies a refused host in enforce mode, with the reason the model can act on', async () => {
@@ -257,12 +314,46 @@ describe('the tool-tier guard', () => {
     expect(plugin.records()).toEqual([])
   })
 
-  it('abstains on a URL it cannot parse, leaving the tool its own argument error', async () => {
+  it('records a URL it cannot parse against a marker, so the audit lane keeps it', async () => {
     const plugin = await mount({ mode: 'enforce' })
     plugin.mounted()
 
-    expect(plugin.guards[0]?.(execution('web_fetch', { url: 'not a url' }))).toBeUndefined()
-    expect(plugin.records()).toEqual([])
+    expect(plugin.guards[0]?.(execution('web_fetch', { url: 'not a url' }))).toContain('blocked-by-invalid-url')
+    expect(plugin.records()).toHaveLength(1)
+    expect(plugin.records()[0]?.['dst_endpoint']).toMatchObject({ hostname: '(unparsed-url)' })
+    expect(dshOf(plugin.records()[0]!)).toMatchObject({ url_length: 9, url_digest: expect.stringContaining('hmac-sha256:') })
+  })
+
+  it('records a hostless scheme against a marker, naming the scheme to the model', async () => {
+    const plugin = await mount({ mode: 'enforce' })
+    plugin.mounted()
+
+    const reason = plugin.guards[0]?.(execution('web_fetch', { url: 'file:///etc/passwd' }))
+
+    expect(reason).toContain('only http and https are allowed')
+    expect(dshOf(plugin.records()[0]!)).toMatchObject({ verdict: 'denied', reason: 'blocked-by-scheme' })
+  })
+
+  it('denies and records an over-length URL to a denied host, which the guard alone would miss', async () => {
+    const plugin = await mount({ mode: 'enforce', allow: [], fetch: { enabled: false } })
+    plugin.mounted()
+
+    const padded = `https://evil.test/?${'a'.repeat(2100)}`
+    const reason = plugin.guards[0]?.(execution('web_fetch', { url: padded }))
+
+    expect(reason).toContain('blocked-by-allowlist')
+    expect(plugin.records()).toHaveLength(1)
+    expect(plugin.records()[0]?.['dst_endpoint']).toMatchObject({ hostname: 'evil.test' })
+  })
+
+  it('denies an over-length URL to a host the allow list covers, and says why', async () => {
+    const plugin = await mount({ mode: 'enforce', allow: ['*'], fetch: { enabled: false, maxUrlLength: 64 } })
+    plugin.mounted()
+
+    const reason = plugin.guards[0]?.(execution('web_fetch', { url: `https://good.test/${'a'.repeat(100)}` }))
+
+    expect(reason).toContain('blocked-by-url-length')
+    expect(dshOf(plugin.records()[0]!)).toMatchObject({ verdict: 'denied', reason: 'blocked-by-url-length' })
   })
 
   it('denies a search query naming a refused host', async () => {

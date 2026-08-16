@@ -21,7 +21,7 @@
 
 import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, isAbsolute } from 'node:path'
 import { JSON_SCHEMA, load } from 'js-yaml'
 import z from '@deepseek-ai/schemastery'
 import { overlapsUnopenable, parseCidr, type Cidr } from './address.ts'
@@ -68,7 +68,7 @@ export interface Config {
   policyFile?: string
   /** Absolute path of this plugin's own OCSF spool. Never the session log. */
   spoolPath: string
-  /** File this plugin remembers already-seen hosts in; defaults to `<spoolPath>.hosts`. */
+  /** Absolute path of the already-seen host memory; defaults to `<spoolPath>.hosts`. */
   hostMemoryPath?: string
   /** Provider id this package registers with `ctx.web`; `web.fetchProvider` must name it. */
   fetchProviderId?: string
@@ -89,6 +89,8 @@ export interface Config {
   search?: {
     /** Whether the search arms (the outbound-query guard and the provider) run. */
     enabled?: boolean
+    /** Longest query whose hosts are read; a longer one is refused rather than scanned. */
+    maxQueryLength?: number
     /** The vendor provider this package wraps; absent leaves the provider unusable. */
     delegate?: SearchDelegateConfig
   }
@@ -119,8 +121,11 @@ export interface Config {
   vendorName?: string
 }
 
-/** Longest URL this package accepts before parsing it. */
+/** Longest URL this package decides; a longer one is denied. */
 const DEFAULT_MAX_URL_LENGTH = 2048
+
+/** Longest search query whose hosts are read; a longer one is denied unscanned. */
+const DEFAULT_MAX_QUERY_LENGTH = 2048
 
 /** Largest response body read, in bytes. */
 const DEFAULT_MAX_RESPONSE_BYTES = 5_000_000
@@ -168,6 +173,7 @@ export const Config: z<Config> = z.object({
   }),
   search: z.object({
     enabled: z.boolean().default(true),
+    maxQueryLength: z.number().default(DEFAULT_MAX_QUERY_LENGTH),
     delegate: z.object({
       module: z.string(),
       export: z.string(),
@@ -320,6 +326,8 @@ export interface ResolvedPolicy {
   readonly searchProviderId: string
   readonly fetch: FetchLimits
   readonly searchEnabled: boolean
+  /** Longest query the outbound-query arm reads; past it the query is denied unscanned. */
+  readonly searchMaxQueryLength: number
   readonly searchDelegate: Required<SearchDelegateConfig> | undefined
   readonly hmacKey: Buffer
   readonly fleet: ResolvedFleet
@@ -370,25 +378,54 @@ function resolveOpenedAddresses(entries: readonly string[]): readonly Cidr[] {
  *
  * A hostname is not an identity: it changes when a laptop is renamed and
  * collides across a fleet built from one image.
+ *
+ * Persisting it is best effort. A spool directory this process cannot write is
+ * a reason for records to carry a per-process uid, not a reason to refuse the
+ * mount — that is the outage `SpoolSink.write` deliberately refuses to cause,
+ * and failing here would cause it one step earlier.
  * @param path - where the uid is kept.
+ * @param onFailure - notified when the uid cannot be persisted.
  * @returns the uid this installation reports as `device.uid`.
  */
-export function readOrCreateInstallUid(path: string): string {
+export function readOrCreateInstallUid(path: string, onFailure: (error: unknown) => void = () => {}): string {
   try {
     const existing = readFileSync(path, 'utf8').trim()
     if (existing.length > 0) return existing
   } catch {
-    // ENOENT only: this installation has not minted a uid yet.
+    // Any read failure: absent on first run, and unreadable is the same
+    // answer — this process has no persisted uid to report.
   }
   const minted = randomUUID()
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, `${minted}\n`, { mode: 0o640 })
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, `${minted}\n`, { mode: 0o640 })
+  } catch (error: unknown) {
+    onFailure(error)
+  }
   return minted
 }
 
 /** Validate one positive finite limit. */
 function assertPositive(name: string, value: number): number {
   if (!Number.isFinite(value) || value <= 0) throw new PolicyError(`${name} must be a positive finite number`)
+  return value
+}
+
+/**
+ * Validate one configured path.
+ *
+ * A relative path resolves against the process's working directory, which for
+ * `dsh` is the workspace — the same attacker-controlled directory the
+ * repo-local policy tier is defended against. An audit sink inside it can be
+ * read, replaced or deleted by the agent it is recording.
+ */
+function assertAbsolutePath(name: string, value: string): string {
+  if (!isAbsolute(value)) {
+    throw new PolicyError(
+      `${name} must be an absolute path; "${value}" resolves against the workspace, which this plugin treats as`
+      + ' attacker-controlled',
+    )
+  }
   return value
 }
 
@@ -411,6 +448,9 @@ function resolveSearchDelegate(delegate: SearchDelegateConfig | undefined): Requ
  * @param config - the deployment-controlled configuration.
  * @param repo - the repo-local policy, when one is mounted.
  * @param env - the process environment, read for an `env`-sourced HMAC key.
+ * @param onFailure - notified when the install uid cannot be persisted; `apply`
+ *   passes the plugin's reporter, and a caller without one loses only the
+ *   uid's stability across restarts.
  * @returns the effective policy every seam reads.
  * @throws PolicyError when any part of the configuration cannot be used as written.
  */
@@ -418,9 +458,10 @@ export function resolvePolicy(
   config: Config,
   repo?: RepoPolicy,
   env: NodeJS.ProcessEnv = process.env,
+  onFailure: (error: unknown) => void = () => {},
 ): ResolvedPolicy {
   const fetchConfig = config.fetch ?? {}
-  const spoolPath = config.spoolPath
+  const spoolPath = assertAbsolutePath('spoolPath', config.spoolPath)
   const labels = [...config.fleet?.labels ?? []]
   const tags = Object.entries(config.fleet?.tags ?? {}).map(([name, value]) => ({ name, value }))
   return {
@@ -428,7 +469,9 @@ export function resolvePolicy(
     hosts: HostPolicy.compile(config.allow ?? [], [...config.deny ?? [], ...repo?.addDeny ?? []]),
     openedAddresses: resolveOpenedAddresses(config.allowPrivateAddresses ?? []),
     spoolPath,
-    hostMemoryPath: config.hostMemoryPath ?? `${spoolPath}.hosts`,
+    hostMemoryPath: config.hostMemoryPath === undefined
+      ? `${spoolPath}.hosts`
+      : assertAbsolutePath('hostMemoryPath', config.hostMemoryPath),
     fetchProviderId: config.fetchProviderId ?? DEFAULT_PROVIDER_ID,
     searchProviderId: config.searchProviderId ?? DEFAULT_PROVIDER_ID,
     fetch: {
@@ -445,6 +488,10 @@ export function resolvePolicy(
       userAgent: fetchConfig.userAgent ?? DEFAULT_USER_AGENT,
     },
     searchEnabled: config.search?.enabled ?? true,
+    searchMaxQueryLength: assertPositive(
+      'search.maxQueryLength',
+      config.search?.maxQueryLength ?? DEFAULT_MAX_QUERY_LENGTH,
+    ),
     searchDelegate: resolveSearchDelegate(config.search?.delegate),
     hmacKey: resolveHmacKey(config, env),
     fleet: {
@@ -452,7 +499,12 @@ export function resolvePolicy(
       labels: labels.length === 0 ? undefined : labels,
       tags: tags.length === 0 ? undefined : tags,
       installUid: config.fleet?.installUid
-        ?? readOrCreateInstallUid(config.fleet?.installUidPath ?? `${spoolPath}.install-uid`),
+        ?? readOrCreateInstallUid(
+          config.fleet?.installUidPath === undefined
+            ? `${spoolPath}.install-uid`
+            : assertAbsolutePath('fleet.installUidPath', config.fleet.installUidPath),
+          onFailure,
+        ),
     },
     extensionName: config.extension?.name ?? 'dsh',
     extensionUid: config.extension?.uid,

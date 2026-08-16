@@ -66,11 +66,12 @@ describe('checking a URL', () => {
   it.each([
     ['file:', 'file:///etc/passwd'],
     ['data:', 'data:text/plain,hello'],
-  ])('reports the hostless %s scheme as invalid, naming the scheme', (_label, raw) => {
-    // There is no endpoint to put in a record, so it is not a policy decision;
-    // the message still tells the model what to change.
+  ])('reports the hostless %s scheme as hostless, naming the scheme', (_label, raw) => {
+    // There is no endpoint to put in a record, so the caller records it against
+    // a marker; the message still tells the model what to change.
     expect(checkUrl(raw, policy)).toMatchObject({
       kind: 'invalid',
+      reason: 'blocked-by-scheme',
       detail: expect.stringContaining('only http and https are allowed'),
     })
   })
@@ -101,16 +102,30 @@ describe('checking a URL', () => {
     expect(checkUrl('https://example.com/', ported)).toMatchObject({ target: { display: 'example.com' } })
   })
 
-  it('reports text that is not a URL as invalid rather than as a policy denial', () => {
-    expect(checkUrl('not a url', policy)).toMatchObject({ kind: 'invalid' })
+  it('reports text that is not a URL as hostless, and never echoes it back', () => {
+    const checked = checkUrl('not a url', policy)
+
+    expect(checked).toMatchObject({ kind: 'invalid', reason: 'blocked-by-invalid-url' })
+    expect(JSON.stringify(checked)).not.toContain('not a url')
   })
 
-  it('refuses a URL past the configured length before parsing it', () => {
+  it('denies a URL past the configured length against the host it names', () => {
     const short = policyOf(home, { allow: ['*'], fetch: { maxUrlLength: 30 } })
 
     expect(checkUrl(`https://api.example.com/${'a'.repeat(50)}`, short)).toMatchObject({
-      kind: 'invalid',
-      detail: expect.stringContaining('maximum length of 30'),
+      kind: 'checked',
+      target: { identity: { key: 'api.example.com' } },
+      decision: { kind: 'deny', reason: 'blocked-by-url-length', detail: expect.stringContaining('maximum of 30') },
+    })
+  })
+
+  it('reports the host verdict on an over-length URL, so padding cannot hide the target', () => {
+    const short = policyOf(home, { allow: ['good.test'], fetch: { maxUrlLength: 30 } })
+
+    expect(checkUrl(`https://evil.test/?${'a'.repeat(50)}`, short)).toMatchObject({
+      kind: 'checked',
+      target: { identity: { key: 'evil.test' } },
+      decision: { kind: 'deny', reason: 'blocked-by-allowlist' },
     })
   })
 })
@@ -119,7 +134,7 @@ describe('checking a resolver answer', () => {
   const policy = policyOf(home, { allow: ['*'] })
 
   it('allows an answer of public addresses only', () => {
-    expect(checkAddresses([answer('93.184.216.34')], policy)).toEqual({ kind: 'allow', rule: 'address:public' })
+    expect(checkAddresses([answer('198.51.100.34')], policy)).toEqual({ kind: 'allow', rule: 'address:public' })
   })
 
   it('denies an empty answer rather than connecting to nothing', () => {
@@ -140,7 +155,7 @@ describe('checking a resolver answer', () => {
   })
 
   it('denies a mixed answer, so the outcome does not depend on address selection order', () => {
-    expect(checkAddresses([answer('93.184.216.34'), answer('169.254.169.254')], policy)).toMatchObject({
+    expect(checkAddresses([answer('198.51.100.34'), answer('169.254.169.254')], policy)).toMatchObject({
       kind: 'deny',
       rule: 'address:cloud-metadata',
     })

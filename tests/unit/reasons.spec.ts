@@ -13,6 +13,10 @@ describe('the refusal vocabulary', () => {
       'blocked-by-scheme',
       'blocked-by-credentials',
       'blocked-by-redirect',
+      'blocked-by-url-length',
+      'blocked-by-invalid-url',
+      'blocked-by-invalid-argument',
+      'blocked-by-query-length',
     ])
   })
 

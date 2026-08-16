@@ -57,8 +57,13 @@ export interface FetchObservation {
   readonly enforced: boolean
   readonly reason?: DenialReason
   readonly rule?: string
+  /** What the decision was about, in this package's own words; never vendor or model text. */
+  readonly detail?: string
   readonly target: Target
-  /** The address the socket was pinned to, when one was chosen. */
+  /**
+   * The address the record is about: the one the socket was pinned to, or the
+   * one that caused a denial when a different address in the answer did.
+   */
   readonly resolvedIp?: string
   /** 0 for the requested URL, 1 for the first redirect target, and so on. */
   readonly hop: number
@@ -200,7 +205,10 @@ export class GuardedFetchProvider implements WebFetchProvider {
   async #authorise(raw: string, hop: number, signal: AbortSignal): Promise<{ target: Target; pinned: HostIdentity }> {
     const checked = checkUrl(raw, this.#policy)
     if (checked.kind === 'invalid') {
-      throw new NetguardWebError(checked.detail, 'WEB_INVALID_URL')
+      // The tool guard has already recorded this one against a marker: there is
+      // no endpoint here to put in a record, and the precise message is what
+      // the model has to act on.
+      throw new NetguardWebError(checked.detail, REASON_CODES[checked.reason])
     }
     const { target } = checked
     this.#settle(checked.decision, { kind: hop === 0 ? 'fetch' : 'redirect', target, hop })
@@ -265,6 +273,11 @@ export class GuardedFetchProvider implements WebFetchProvider {
       enforced,
       reason: decision.reason,
       ...decision.rule === undefined ? {} : { rule: decision.rule },
+      ...decision.detail === undefined ? {} : { detail: decision.detail },
+      // One refused address refuses the whole answer, and it is rarely the
+      // first one. A rebinding record that names the address that was fine is
+      // evidence pointing at the wrong endpoint.
+      ...decision.address === undefined ? {} : { resolvedIp: decision.address },
     })
     if (!enforced) return
     throw new NetguardWebError(

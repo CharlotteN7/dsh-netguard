@@ -73,18 +73,35 @@ export function readSeamState(
   return { pin, usableOthers }
 }
 
-/** The composition a profile needs, quoted in every failure message. */
+/**
+ * The composition a profile needs, quoted in every failure message.
+ *
+ * This is the patch README.md prints, character for character: an operator who
+ * reads one and pastes the other has to get the same profile either way.
+ */
 const REQUIRED_PATCH = [
   'Add this to the profile\'s cordis.patch.yml (a patch REPLACES a row\'s whole config,',
   'so restate every key the row needs):',
   '',
-  '  - insert:',
-  '      - id: web',
-  '        name: \'@deepseek-ai/dsh-web\'',
-  '        config:',
-  '          fetchProvider: dsh-netguard',
-  '          searchProvider: deepseek-official',
+  '  - id: web',
+  '    config:',
+  '      fetchProvider: dsh-netguard',
+  '      searchProvider: deepseek-official   # whatever your profile already uses',
+  '',
+  '  - id: tool-web',
+  '    config:',
+  '      fetch: true                          # the base bundle ships this off',
+  '      searchTimeoutMs: 60000',
+  '',
+  '  # Only if your composition mounts the shipped provider; the base bundle does not.',
   '  - remove: [web-fetch-http]',
+  '',
+  '  - id: dsh-netguard',
+  '    config:',
+  '      mode: audit',
+  '      allow: []',
+  '      deny: []',
+  '      spoolPath: /var/log/dsh/netguard.ocsf.jsonl',
 ].join('\n')
 
 /**
@@ -118,5 +135,30 @@ export function assertSelectable(capability: 'fetch' | 'search', state: SeamStat
     + ` already registered as a usable ${capability} provider and ${key} is not pinned. The seam refuses to choose`
     + ` between two usable providers (WEB_PROVIDER_AMBIGUOUS), so web_${capability} would fail at the first call.`
     + `\n${REQUIRED_PATCH}`,
+  )
+}
+
+/**
+ * Fail the mount when the profile pinned a provider this package registers
+ * without configuring what that provider needs to answer.
+ *
+ * The guarded search provider reports itself unusable without a vendor
+ * delegate, which is what keeps mounting this plugin from breaking a profile's
+ * existing search route. A profile that pins it anyway composes cleanly and
+ * then fails every `web_search` at call time, which is the half-working start
+ * the mount check exists to prevent.
+ * @param capability - `fetch` or `search`, named in the message.
+ * @param state - what {@link readSeamState} could read.
+ * @param ourId - the id this package registers under.
+ * @throws Error when the pin names this package's unusable provider.
+ */
+export function assertPinnedProviderUsable(capability: 'fetch' | 'search', state: SeamState, ourId: string): void {
+  if (state.pin !== ourId) return
+  const key = capability === 'fetch' ? 'web.fetchProvider' : 'web.searchProvider'
+  throw new Error(
+    `dsh-netguard: ${key} is pinned to "${ourId}", but no ${capability}.delegate is configured, so this package's`
+    + ` provider reports itself unusable and every web_${capability} would fail with WEB_PROVIDER_UNAVAILABLE.`
+    + ` Configure ${capability}.delegate on the dsh-netguard row, or point ${key} at the vendor provider the`
+    + ' profile already uses.',
   )
 }

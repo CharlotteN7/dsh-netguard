@@ -3,11 +3,12 @@
  * against every selection state it can report.
  */
 
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import WebRuntime from '@deepseek-ai/dsh-web'
 import type { WebFetchProvider } from '@deepseek-ai/dsh-web'
-import { assertSelectable, readSeamState } from '../../src/mount.ts'
+import { assertPinnedProviderUsable, assertSelectable, readSeamState } from '../../src/mount.ts'
 
 /** A fetch provider that reports the availability a test needs. */
 function stubProvider(id: string, usable: boolean): WebFetchProvider {
@@ -92,6 +93,40 @@ describe('failing the mount', () => {
   it('quotes a working composition in every message', () => {
     expect(() => assertSelectable('fetch', { pin: undefined, usableOthers: ['http'] }, 'dsh-netguard'))
       .toThrow(/fetchProvider: dsh-netguard/)
+  })
+
+  it('quotes the same patch the README prints, so both produce one profile', () => {
+    const patch = readFileSync(new URL('../../README.md', import.meta.url), 'utf8')
+    const quoted = String(
+      (() => {
+        try {
+          assertSelectable('fetch', { pin: undefined, usableOthers: ['http'] }, 'dsh-netguard')
+        } catch (error: unknown) { return (error as Error).message }
+        throw new Error('the composition check did not fail')
+      })(),
+    )
+
+    const body = quoted.split('\n').filter(line => line.startsWith('  ') && line.trim().length > 0)
+
+    expect(body.length).toBeGreaterThan(8)
+    for (const line of body) expect(patch).toContain(line.slice(2))
+  })
+
+  it('refuses a pin naming this package when it has nothing to delegate to', () => {
+    expect(() => assertPinnedProviderUsable('search', { pin: 'dsh-netguard', usableOthers: [] }, 'dsh-netguard'))
+      .toThrow(/no search.delegate is configured/)
+  })
+
+  it('names the fetch pin when the fetch provider is the unusable one', () => {
+    expect(() => assertPinnedProviderUsable('fetch', { pin: 'dsh-netguard', usableOthers: [] }, 'dsh-netguard'))
+      .toThrow(/web.fetchProvider is pinned to "dsh-netguard"/)
+  })
+
+  it('accepts any pin that does not name this package', () => {
+    expect(() => assertPinnedProviderUsable('search', { pin: 'deepseek-official', usableOthers: [] }, 'dsh-netguard'))
+      .not.toThrow()
+    expect(() => assertPinnedProviderUsable('search', { pin: undefined, usableOthers: ['exa'] }, 'dsh-netguard'))
+      .not.toThrow()
   })
 })
 

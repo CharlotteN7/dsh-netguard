@@ -1,6 +1,6 @@
 /** `dsh-netguard report`: argument parsing, the summary, and the suggested allow list. */
 
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { formatSuggestion, main, parseArgv, parseRecord, parseSince, readSpool } from '../../src/cli.ts'
@@ -173,13 +173,13 @@ describe('the report', () => {
   it('names a denial with no reason and shows the address a request reached', () => {
     const path = spoolOf([
       { verdict: 'denied', enforced: true },
-      { resolvedIp: '93.184.216.34' },
+      { resolvedIp: '198.51.100.34' },
     ])
 
     const { out } = run(['report', '--spool', path])
 
     expect(out).toContain('unknown')
-    expect(out).toContain('[93.184.216.34]')
+    expect(out).toContain('[198.51.100.34]')
   })
 
   it('groups by tool and by host', () => {
@@ -238,5 +238,59 @@ describe('the suggested allow list', () => {
       mode: 'audit',
       kind: 'search',
     }])).toEqual(['# dsh-netguard observed no hosts in the selected records.'])
+  })
+
+  it('reads how a query named a host out of the record, and keeps prose out of the suggestion', () => {
+    const path = spoolOf([
+      { kind: 'search', host: 'mentioned.test', attributes: { host_mention: 'bare' } },
+      { kind: 'search', host: 'named.test', attributes: { host_mention: 'operator' } },
+    ])
+
+    expect(parseRecord(readFileSync(path, 'utf8').split('\n')[0] as string)).toMatchObject({ hostMention: 'bare' })
+
+    const { out } = run(['report', '--spool', path, '--suggest'])
+
+    expect(out).not.toContain('mentioned.test')
+    expect(out).toContain("- 'named.test'")
+  })
+
+  it('refuses to write a recorded value that is not a host name into the YAML it prints', () => {
+    // The spool is a durable boundary, and this output is documented as ready
+    // to paste into cordis.yml: a record from an older version, or one whose
+    // host came from a vendor string, must not become an `allow: - '*'` line.
+    const lines = formatSuggestion([{
+      time: 0,
+      host: "good.test'\nallow:\n  - '*'",
+      port: 443,
+      verdict: 'denied',
+      enforced: true,
+      mode: 'enforce',
+      kind: 'search',
+    }])
+
+    expect(lines.join('\n')).not.toContain("- '*'")
+    expect(lines).toEqual([
+      '# dsh-netguard observed no hosts in the selected records.',
+      '# 1 recorded value(s) are not host names and were left out; read them with the report itself.',
+    ])
+  })
+
+  it('leaves a host a query only named in prose out of the list', () => {
+    const lines = formatSuggestion([
+      {
+        time: 0,
+        host: 'mentioned.test',
+        port: 443,
+        verdict: 'denied',
+        enforced: true,
+        mode: 'enforce',
+        kind: 'search',
+        hostMention: 'bare',
+      },
+      { time: 0, host: 'fetched.test', port: 443, verdict: 'allowed', enforced: true, mode: 'enforce', kind: 'fetch' },
+    ])
+
+    expect(lines.join('\n')).not.toContain('mentioned.test')
+    expect(lines.join('\n')).toContain("- 'fetched.test'")
   })
 })

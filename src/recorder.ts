@@ -12,7 +12,7 @@
 import type { CallIdentity, TargetCorrelator } from './correlate.ts'
 import type { FetchObservation } from './fetch-provider.ts'
 import { buildDecisionRecord, type JsonValue, type RecordEnvironment } from './ocsf.ts'
-import { digestQuery, digestUrl } from './privacy.ts'
+import { digest, digestQuery, digestUrl, HOST_MARKERS, isRecordableHost } from './privacy.ts'
 import { newDecisionId } from './sink.ts'
 import type { HostMemory, SpoolSink } from './sink.ts'
 import type { SearchObservation } from './search-provider.ts'
@@ -75,7 +75,15 @@ export class Recorder {
         resolvedIp: observation.resolvedIp,
       },
       identity,
-      { hop: observation.hop, url_digest: url.digest, url_length: url.length, has_query: url.hasQuery },
+      {
+        hop: observation.hop,
+        url_digest: url.digest,
+        url_length: url.length,
+        has_query: url.hasQuery,
+        // What the decision was actually about, when one address out of several
+        // caused it: without this the record names an endpoint that was fine.
+        ...observation.detail === undefined ? {} : { detail: observation.detail },
+      },
     )
   }
 
@@ -102,7 +110,15 @@ export class Recorder {
         query_digest: query.digest,
         query_length: query.length,
         ...observation.droppedSources === undefined ? {} : { dropped_sources: observation.droppedSources },
+        ...observation.hostMention === undefined ? {} : { host_mention: observation.hostMention },
+        ...observation.sourceUrl === undefined
+          ? {}
+          : { source_digest: digest(policy.hmacKey, observation.sourceUrl), source_length: observation.sourceUrl.length },
       },
+      // A host read out of prose is a word in a question, not a destination
+      // this installation contacted. Remembering it would put it in
+      // `report --suggest`, which writes allow lists.
+      { remember: observation.hostMention !== 'bare' },
     )
   }
 
@@ -111,26 +127,42 @@ export class Recorder {
    * @param decision - the verdict fields.
    * @param identity - the calling tool.
    * @param attributes - the extension-owned attributes this decision adds.
+   * @param options - `remember: false` keeps the host out of the host memory.
    */
   guard(
     decision: Omit<DecisionFacts, 'kind'>,
     identity: CallIdentity,
     attributes: Readonly<Record<string, JsonValue>>,
+    options: { readonly remember?: boolean } = {},
   ): void {
-    this.#write({ ...decision, kind: 'guard' }, identity, attributes)
+    this.#write({ ...decision, kind: 'guard' }, identity, attributes, options)
   }
 
-  /** Stamp identity, sequence and first-seen onto one decision and spool it. */
+  /**
+   * Stamp identity, sequence and first-seen onto one decision and spool it.
+   *
+   * This is the one place a host reaches a verbatim field, so it is where the
+   * lane rule is applied: `dst_endpoint.hostname`, `observables[].value` and
+   * `message` carry a plain host spelling or a marker, never an unvalidated
+   * string. WHATWG `URL` keeps `'`, `` ` ``, `$`, `;` and `,` in a hostname,
+   * and a vendor search result is not this package's text at all.
+   */
   #write(
     decision: DecisionFacts,
     identity: CallIdentity | undefined,
     attributes: Readonly<Record<string, JsonValue>>,
+    options: { readonly remember?: boolean } = {},
   ): void {
     const clock = this.#options.clock ?? (() => new Date())
-    const firstSeen = this.#options.memory.note(decision.host, decision.verdict, clock())
+    const recordable = isRecordableHost(decision.host)
+    const host = recordable ? decision.host : HOST_MARKERS.unrecordableHost
+    const firstSeen = options.remember === false
+      ? false
+      : this.#options.memory.note(host, decision.verdict, clock())
     this.#seq += 1
     this.#options.sink.write(buildDecisionRecord(this.#options.env, {
       ...decision,
+      host,
       firstSeen,
       decisionId: newDecisionId(),
       seq: this.#seq,
@@ -144,7 +176,9 @@ export class Recorder {
             ...identity.turn === undefined ? {} : { turn: identity.turn },
             ...identity.step === undefined ? {} : { step: identity.step },
           },
-      attributes,
+      attributes: recordable
+        ? attributes
+        : { ...attributes, host_digest: digest(this.#options.env.policy.hmacKey, decision.host) },
     }))
   }
 }

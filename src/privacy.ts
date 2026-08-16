@@ -49,6 +49,51 @@ export function digestUrl(key: Buffer, url: URL): DigestedUrl {
   return { digest: digest(key, url.href), length: url.href.length, hasQuery: url.search.length > 0 }
 }
 
+/**
+ * What a record's `host` field says when there is no host to name.
+ *
+ * `dst_endpoint.hostname`, `observables[].value` and `message` are verbatim
+ * fields, and a decision can arrive without a hostname at all: a `url` argument
+ * that is not a string, text that is not a URL, a vendor source URL that does
+ * not parse, a query rather than a target. Each of those gets one of these
+ * fixed markers, and the value itself is carried as a digest.
+ */
+export const HOST_MARKERS = Object.freeze({
+  /** The `url` or `query` argument was present but not a string. */
+  nonString: '(non-string-argument)',
+  /** The text is not a URL with a host this package can decide. */
+  unparsedUrl: '(unparsed-url)',
+  /** A vendor search result named a source URL that does not parse. */
+  unparsedSource: '(unparsed-source)',
+  /** The decision is about a search query rather than about one target. */
+  query: '(query)',
+  /** A hostname carrying characters a verbatim field may not hold. */
+  unrecordableHost: '(unrecordable-host)',
+})
+
+/** Every marker, so a reader of the spool can tell one from a hostname. */
+const MARKER_VALUES: ReadonlySet<string> = new Set(Object.values(HOST_MARKERS))
+
+/**
+ * Characters a hostname may carry into a verbatim record field.
+ *
+ * WHATWG `URL` keeps `'`, `"`, a backtick, `$`, `;`, `,` and `{` in a hostname,
+ * and a vendor search result is not this package's text at all. A record field
+ * is read by a SIEM, pasted into YAML by `--suggest`, and rendered in a report,
+ * so anything outside a DNS name, a dotted quad or a compressed IPv6 literal is
+ * replaced by a marker rather than written through.
+ */
+const RECORDABLE_HOST = /^[a-z0-9.:_-]+$/
+
+/**
+ * Whether a host may be written into a verbatim record field.
+ * @param host - the canonical host key, or one of {@link HOST_MARKERS}.
+ * @returns true when the value is a marker or a plain host spelling.
+ */
+export function isRecordableHost(host: string): boolean {
+  return MARKER_VALUES.has(host) || RECORDABLE_HOST.test(host)
+}
+
 /** A search query reduced to what the SOC lane may hold. */
 export interface DigestedQuery {
   readonly digest: string

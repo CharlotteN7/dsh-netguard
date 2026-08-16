@@ -19,6 +19,7 @@
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { defaultSpoolPath } from './home.ts'
+import { HOST_MARKERS } from './privacy.ts'
 
 /** How many decisions the report lists individually. */
 const RECENT_LIMIT = 10
@@ -38,6 +39,8 @@ export interface ReportRecord {
   readonly tool?: string
   readonly sessionId?: string
   readonly resolvedIp?: string
+  /** How a search query named the host: `url`, `operator`, or `bare` prose. */
+  readonly hostMention?: string
 }
 
 /** The extension-owned attributes of one record, with the two fields every one carries. */
@@ -108,6 +111,9 @@ export function parseRecord(line: string): ReportRecord | undefined {
     ...stringField(attributes, 'tool') === undefined ? {} : { tool: stringField(attributes, 'tool') as string },
     ...stringField(attributes, 'session_id') === undefined ? {} : { sessionId: stringField(attributes, 'session_id') as string },
     ...stringField(endpoint, 'ip') === undefined ? {} : { resolvedIp: stringField(endpoint, 'ip') as string },
+    ...stringField(attributes, 'host_mention') === undefined
+      ? {}
+      : { hostMention: stringField(attributes, 'host_mention') as string },
   }
 }
 
@@ -218,20 +224,42 @@ export function selectRecords(records: readonly ReportRecord[], options: ReportO
 }
 
 /**
+ * Hosts this command will write into a YAML allow list.
+ *
+ * The spool is a durable boundary: it is written by other versions of this
+ * package, and a record's hostname can be a string a vendor or a model chose.
+ * The output of `--suggest` is documented as ready to paste into `cordis.yml`,
+ * so anything that is not a plain host spelling — a quote, a newline, an
+ * `allow:` line of its own — is left out rather than quoted and hoped for.
+ */
+const SUGGESTABLE_HOST = /^[a-z0-9._-]+$/
+
+/**
  * Render the allow list the observed decisions imply.
  * @param records - the selected records.
  * @returns the lines to print: a ready `allow:` block.
  */
 export function formatSuggestion(records: readonly ReportRecord[]): readonly string[] {
-  const hosts = [...new Set(records.map(record => record.host))].filter(host => host !== '(query)').sort()
-  if (hosts.length === 0) return ['# dsh-netguard observed no hosts in the selected records.']
+  // A host a query merely named in prose is a word in a question, not a
+  // destination anything connected to. A marker stands in for a decision that
+  // had no hostname at all, and belongs in no allow list.
+  const markers = new Set<string>(Object.values(HOST_MARKERS))
+  const usable = records.filter(record => record.hostMention !== 'bare' && !markers.has(record.host))
+  const observed = [...new Set(usable.map(record => record.host))].sort()
+  const hosts = observed.filter(host => SUGGESTABLE_HOST.test(host))
+  const skipped = observed.length - hosts.length
+  const note = skipped === 0
+    ? []
+    : [`# ${String(skipped)} recorded value(s) are not host names and were left out; read them with the report itself.`]
+  if (hosts.length === 0) return ['# dsh-netguard observed no hosts in the selected records.', ...note]
   return [
     '# Allow list derived from observed hosts. Read every line before using it:',
     '# audit mode records what happened, not what should be permitted, and one',
     '# entry here may be the request you mounted this plugin to stop.',
+    ...note,
     'allow:',
     ...hosts.map((host) => {
-      const seen = records.filter(record => record.host === host)
+      const seen = usable.filter(record => record.host === host)
       const denied = seen.filter(record => record.verdict === 'denied').length
       return `  - '${host}'   # ${String(seen.length)} request(s), ${String(denied)} the policy would refuse`
     }),
