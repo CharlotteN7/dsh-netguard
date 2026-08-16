@@ -1,0 +1,182 @@
+/** What one decision becomes on disk, and what it is never allowed to carry. */
+
+import { join } from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
+import { TargetCorrelator } from '../../src/correlate.ts'
+import { createEnvironment } from '../../src/ocsf.ts'
+import { Recorder } from '../../src/recorder.ts'
+import { HostMemory, SpoolSink } from '../../src/sink.ts'
+import type { Target } from '../../src/decide.ts'
+import { identifyHost } from '../../src/address.ts'
+import { disposeHome, dshOf, makeHome, policyOf, spooled } from './support.ts'
+
+const home = makeHome('recorder')
+afterAll(() => { disposeHome(home) })
+
+/** A target over one URL, as `decide.ts` builds it. */
+function targetOf(raw: string): Target {
+  const url = new URL(raw)
+  const identity = identifyHost(url.hostname)
+  if (identity === undefined) throw new Error(`test fixture "${raw}" names no host`)
+  return { url, identity, port: url.port.length > 0 ? Number(url.port) : 443, display: identity.key }
+}
+
+/** A recorder over a throwaway spool. */
+let counter = 0
+function recorder(overrides = {}) {
+  counter += 1
+  const spoolPath = join(home, `spool-${String(counter)}.jsonl`)
+  const policy = policyOf(home, { allow: ['*'], ...overrides })
+  const targets = new TargetCorrelator()
+  return {
+    spoolPath,
+    targets,
+    records: () => spooled(spoolPath),
+    recorder: new Recorder({
+      env: createEnvironment(policy, '0.1.0', () => 1_700_000_000_000),
+      sink: new SpoolSink(spoolPath, () => { throw new Error('unexpected sink failure') }),
+      memory: new HostMemory(join(home, `hosts-${String(counter)}.json`), () => {}),
+      targets,
+      clock: () => new Date(1_700_000_000_000),
+    }),
+  }
+}
+
+describe('recording a fetch decision', () => {
+  it('spools the host verbatim and the URL only as a digest', () => {
+    const fixture = recorder()
+
+    fixture.recorder.fetch({
+      kind: 'fetch',
+      verdict: 'allowed',
+      enforced: true,
+      rule: 'allow:*',
+      target: targetOf('https://example.com/secret/path?token=abc'),
+      resolvedIp: '93.184.216.34',
+      hop: 0,
+    })
+
+    const [record] = fixture.records()
+    const line = JSON.stringify(record)
+    expect(line).not.toContain('/secret/path')
+    expect(line).not.toContain('token=abc')
+    expect(record?.['dst_endpoint']).toMatchObject({ hostname: 'example.com', ip: '93.184.216.34' })
+    expect(dshOf(record!)).toMatchObject({
+      url_digest: expect.stringMatching(/^hmac-sha256:[0-9a-f]{32}$/),
+      url_length: 'https://example.com/secret/path?token=abc'.length,
+      has_query: true,
+      hop: 0,
+    })
+  })
+
+  it('joins the record to the tool call the guard noted', () => {
+    const fixture = recorder()
+    fixture.targets.note('https://example.com/x', {
+      toolName: 'web_fetch',
+      callId: 'call-9',
+      rootCallId: 'call-1',
+      sessionId: 'session-3',
+      turn: 2,
+      step: 4,
+    })
+
+    fixture.recorder.fetch({
+      kind: 'fetch',
+      verdict: 'allowed',
+      enforced: true,
+      target: targetOf('https://example.com/x'),
+      hop: 0,
+    })
+
+    const [record] = fixture.records()
+    expect((record?.['metadata'] as Record<string, unknown>)['correlation_uid']).toBe('session-3:call-9')
+    expect(dshOf(record!)).toMatchObject({ tool: 'web_fetch', call_id: 'call-9', turn: 2, step: 4 })
+  })
+
+  it('numbers records within one process, so metadata.uid is unique', () => {
+    const fixture = recorder()
+    const target = targetOf('https://example.com/')
+
+    fixture.recorder.fetch({ kind: 'fetch', verdict: 'allowed', enforced: true, target, hop: 0 })
+    fixture.recorder.fetch({ kind: 'fetch', verdict: 'allowed', enforced: true, target, hop: 0 })
+
+    expect(fixture.records().map(record => (record['metadata'] as Record<string, unknown>)['sequence'])).toEqual([1, 2])
+  })
+
+  it('flags the first request to a host and nothing after it', () => {
+    const fixture = recorder()
+    const target = targetOf('https://example.com/')
+
+    fixture.recorder.fetch({ kind: 'fetch', verdict: 'allowed', enforced: true, target, hop: 0 })
+    fixture.recorder.fetch({ kind: 'fetch', verdict: 'allowed', enforced: true, target, hop: 0 })
+
+    expect(fixture.records().map(record => dshOf(record)['first_seen_host'])).toEqual([true, false])
+  })
+})
+
+describe('recording a search decision', () => {
+  it('carries the query only as a digest and a length', () => {
+    const fixture = recorder()
+
+    fixture.recorder.search({
+      verdict: 'denied',
+      enforced: true,
+      reason: 'blocked-by-denylist',
+      rule: 'deny:evil.test',
+      host: 'evil.test',
+      port: 443,
+      query: 'site:evil.test AKIAIOSFODNN7EXAMPLE',
+    })
+
+    const [record] = fixture.records()
+    expect(JSON.stringify(record)).not.toContain('AKIAIOSFODNN7EXAMPLE')
+    expect(dshOf(record!)).toMatchObject({
+      query_digest: expect.stringMatching(/^hmac-sha256:/),
+      query_length: 'site:evil.test AKIAIOSFODNN7EXAMPLE'.length,
+      reason: 'blocked-by-denylist',
+    })
+  })
+
+  it('counts the sources a decision dropped', () => {
+    const fixture = recorder()
+
+    fixture.recorder.search({
+      verdict: 'denied',
+      enforced: true,
+      reason: 'blocked-by-allowlist',
+      host: 'bad.test',
+      port: 0,
+      query: 'anything',
+      droppedSources: 1,
+    })
+
+    expect(dshOf(fixture.records()[0]!)['dropped_sources']).toBe(1)
+  })
+
+  it('takes the identity a caller already knows over the join', () => {
+    const fixture = recorder()
+
+    fixture.recorder.search(
+      { verdict: 'allowed', enforced: true, host: '(query)', port: 0, query: 'anything' },
+      { toolName: 'web_search', callId: 'call-2', sessionId: 'session-1' },
+    )
+
+    expect(dshOf(fixture.records()[0]!)).toMatchObject({ tool: 'web_search', call_id: 'call-2' })
+  })
+})
+
+describe('recording a guard decision', () => {
+  it('marks the record as coming from the tool tier', () => {
+    const fixture = recorder({ mode: 'enforce' })
+
+    fixture.recorder.guard(
+      { verdict: 'denied', enforced: true, reason: 'blocked-by-allowlist', host: 'evil.test', port: 443, scheme: 'https' },
+      { toolName: 'web_fetch', callId: 'call-1' },
+      { hop: 0 },
+    )
+
+    const [record] = fixture.records()
+    expect(dshOf(record!)).toMatchObject({ kind: 'guard', verdict: 'denied', enforced: true })
+    expect(record?.['activity_id']).toBe(5)
+  })
+})
