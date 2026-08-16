@@ -1,8 +1,14 @@
 # dsh-netguard
 
 An egress policy for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): a
-host allowlist on harness-originated HTTP, **enforced at connect time**, built as an
+host allowlist on the `web_fetch` and `web_search` tools, checked at connect time, built as an
 out-of-repo plugin.
+
+**It ships in `audit` mode, where nothing is refused.** Every decision is recorded and every
+request goes through, including the ones the policy would deny; `mode: enforce` is what turns
+the records into refusals. It governs those two tools and nothing else — the model channel and
+a vendor search provider's own transport are harness-originated HTTP that this package never
+sees.
 
 The harness has no network control of any kind. Its sandbox governs file effects only —
 `packages/shell/bash-sandbox/README.md:85` says network and process visibility are outside its
@@ -30,7 +36,7 @@ harness's own uid. So:
 - **against a model that is deliberately exfiltrating, it is advisory** — that model writes one
   line of `run_code`.
 
-**Four paths stay open with a perfect allowlist.**
+**Five paths stay open with a perfect allowlist.**
 
 1. **The model channel.** The agent encodes a secret into its next prompt and it leaves over
    the one connection the deployment must permit. This is the dominant path and nothing here
@@ -42,14 +48,25 @@ harness's own uid. So:
 4. **The browser.** DSH's web UI renders model-authored markdown images from any absolute
    `http(s)` URL, with no CSP anywhere in the repo, and that request is made by *your browser*,
    not by the agent's process.
+5. **Search results on a stock profile.** The guarded search provider wraps a vendor provider
+   named in `search.delegate`. Without one it reports itself unusable — which is what keeps
+   this plugin from breaking a profile's existing search route — and the vendor the seam
+   selected answers the seam directly. Only the outbound query is filtered; the result URLs
+   reach the model unfiltered.
 
 What it is good for, stated as narrowly as it is true:
 
-- **It prevents accidents.** A build script phoning home, a dependency's postinstall fetching a
-  second stage, a `web_fetch` to a hallucinated URL — these stop, and you see them.
+- **It prevents accidents on the two tools it governs.** A `web_fetch` to a hallucinated URL, a
+  `web_fetch` at an internal address, a `web_search` steering at a host you deny — these stop,
+  and you see them. **A build script phoning home does not stop, and neither does a
+  dependency's postinstall fetching a second stage**: both are `bash`, which this package
+  cannot see. Stopping those needs the sandbox or a network-layer control.
 - **It raises the cost of an injected agent** that asks a tool to fetch a URL.
-- **It answers "which tool call opened this connection"**, because every record carries the
-  same `correlation_uid` scheme `dsh-ocsf-forwarder` stamps on its Process Activity records.
+- **It answers "which tool call opened this connection"** whenever the join lands, because
+  every record carries the same `correlation_uid` scheme `dsh-ocsf-forwarder` stamps on its
+  Process Activity records. The join is minted in the tool guard and looked up by the provider,
+  and it is bounded and lossy on purpose: a record whose call it could not match carries no
+  `correlation_uid` rather than a guessed one.
 
 ---
 
@@ -96,14 +113,22 @@ write:
   auto-selected — which is why it reports itself unusable unless you configure a delegate, and
   why mounting this plugin never breaks a profile's existing search route.
 
+## Install
+
 ```sh
 dsh plugin --profile <name> add @deepseek-ai/dsh-headless@0.1.0-rc.6
 dsh plugin --profile <name> add dsh-netguard
 dsh --profile <name> --dump-config      # the dsh-netguard row should appear
 ```
 
-Pin `@deepseek-ai/dsh-headless` explicitly: its npm `latest` tag still points at `0.0.1-rc.1`,
-so an unpinned install silently resolves to a much older harness.
+`@deepseek-ai/dsh-headless` is in that list because a profile carrying only `dsh-base` has no
+agent loop. The base bundle inserts the service rows — model adapters, tools, persistence, the
+web seam — and the headless bundle inserts the runner that creates an agent, submits one task,
+and therefore makes the tool calls this package guards. Any other mode bundle does as well;
+headless is the one the examples here use because it needs no terminal and no browser.
+
+Pin it explicitly: its npm `latest` tag still points at `0.0.1-rc.1`, so an unpinned install
+silently resolves to a much older harness.
 
 **Install from the registry or a packed tarball, not from a git spec.**
 `dsh plugin add github:CharlotteN7/dsh-netguard` resolves and writes the dependency, but `lib/`
@@ -143,7 +168,12 @@ whole `config`**, so every key the row needs is restated:
 ```
 
 If you get this wrong, the mount fails with a message naming the conflicting provider and
-quoting the patch above. It does not start half-working.
+quoting the patch above, character for character — a unit test compares the two. What the check
+covers: a pin naming another provider, an unpinned composition that already has a usable one, a
+registry it cannot read, and `web.searchProvider: dsh-netguard` with no `search.delegate`
+configured, which would otherwise mount cleanly and then fail every search. What it cannot
+cover is a fetch provider composed *after* this plugin: that one surfaces as
+`WEB_PROVIDER_AMBIGUOUS` at the first `web_fetch`.
 
 ---
 
@@ -158,7 +188,15 @@ quoting the patch above. It does not start half-working.
     deny: ['*.internal.example']
     allowPrivateAddresses: []            # CIDR blocks; see below
     policyFile: ./.dsh-netguard.yml      # optional, lowest trust
-    spoolPath: /var/log/dsh/netguard.ocsf.jsonl
+    spoolPath: /var/log/dsh/netguard.ocsf.jsonl    # absolute; two sidecars sit beside it
+    hostMemoryPath: /var/log/dsh/netguard.hosts    # absolute; default <spoolPath>.hosts
+    fetchProviderId: dsh-netguard        # what web.fetchProvider has to name
+    searchProviderId: dsh-netguard       # what web.searchProvider would have to name
+    vendorName: dsh-security-plugins     # metadata.product.vendor_name
+    extension:
+      name: dsh                          # keys the extension-owned attributes object
+      placement: unmapped                # or `attribute`, which puts it at the top level
+      uid: 999                           # omit until the OCSF registry assigns you one
     fetch:
       enabled: true
       timeoutMs: 30000
@@ -169,13 +207,49 @@ quoting the patch above. It does not start half-working.
       userAgent: 'dsh-netguard/0.1.0 (+https://github.com/CharlotteN7/dsh-netguard)'
     search:
       enabled: true
+      maxQueryLength: 2048               # past this a query is denied unscanned
       delegate:                          # absent = the search provider stays unusable
         module: '@deepseek-ai/dsh-web-search-exa'
         export: 'ExaSearchProvider'
         options: { apiKey: '...', baseURL: 'https://api.exa.ai', searchType: auto, highlightsPerResult: 1 }
     hmacKey: { source: ephemeral }       # or { source: env, variable: NETGUARD_KEY }
-    fleet: { tenantUid: acme, labels: [prod] }
+    fleet:
+      tenantUid: acme
+      labels: [prod]
+      tags: { team: security }           # metadata.tags[]
+      installUid: laptop-7               # skips the sidecar entirely when you set it
+      installUidPath: /var/log/dsh/netguard.install-uid   # absolute; default <spoolPath>.install-uid
 ```
+
+**Every path is required to be absolute.** A relative one resolves against the process's working
+directory, which for `dsh` is the workspace — the same directory the repo-local policy tier is
+defended against — so a relative `spoolPath` puts the audit trail somewhere the agent it records
+can rewrite. A relative path fails the mount.
+
+**Two sidecar files sit beside the spool**, both created on first use:
+
+| File | Holds | Matters because |
+|---|---|---|
+| `<spoolPath>.hosts` | every host seen, with first/last sighting and counts | `is_alert` on a first-seen host, and `report --suggest` |
+| `<spoolPath>.install-uid` | one minted UUID | `device.uid`, which is stable across a rename and unique across a fleet imaged from one template |
+
+Point `logrotate` at the spool only. The two sidecars are rewritten in place rather than
+appended to, and rotating them costs the installation its host memory and its `device.uid`:
+
+```
+/var/log/dsh/netguard.ocsf.jsonl {
+  weekly
+  rotate 8
+  compress
+  missingok
+  notifempty
+  copytruncate
+}
+```
+
+Set `fleet.installUid` yourself and the uid sidecar is never written. A spool directory this
+process cannot write is reported on stderr and the logger and then continues with an
+in-memory uid, because losing a stable `device.uid` is a smaller loss than refusing to mount.
 
 ### The pattern grammar
 
@@ -195,9 +269,11 @@ allow list denies everything**, and that is what ships.
 
 A pattern that could be read two ways is refused at load rather than widened. Refused:
 a prefix wildcard (`prod*.blob.core.windows.net` — that namespace is self-service, so the
-pattern matches names an attacker can register), a wildcard inside a label, a wildcard over a
-top-level domain (`*.com`), a wildcard over a common public suffix (`*.co.uk`), an unbracketed
-IPv6 literal, a URL, a path, or credentials.
+pattern matches names an attacker can register), a wildcard anywhere but at the front
+(`a*b.example.com`, `*.*.internal.example`, `*.internal.*`), a wildcard over a top-level domain
+(`*.com`), a wildcard over a common public suffix (`*.co.uk`), an unbracketed IPv6 literal, a
+URL, a path, or credentials. Only a leading `*.` or `**.` is a wildcard; anything else is a
+load-time error, in a deny list as much as in an allow list.
 
 The public-suffix check is an **approximation** and is one on purpose: shipping a full public
 suffix list would put a 15,000-line data file that goes stale into the trusted computing base of
@@ -312,6 +388,15 @@ It does two things: it refuses a `web_fetch` or `web_search` the policy denies (
 mode), and it mints the tool-call identity a provider never receives — `WebFetchProvider.fetch`
 is handed `{ url }` and nothing else, with no agent, session or call id.
 
+**It records every call it sees, including the ones it cannot turn into a target.** Tool
+arguments are model-authored JSON, so `url` can arrive as an array, a number, `null`, an object
+with a `toString`, or text that is not a URL at all; each of those is denied in `enforce` mode
+and recorded against a fixed marker — `(non-string-argument)`, `(unparsed-url)` — with a digest
+of the argument beside it. A URL past `fetch.maxUrlLength` is a policy decision too, not a parse
+failure: it is decided against the host it names, so padding a URL cannot reach a denied host
+unrecorded. Only a call carrying no `url` or `query` key at all is passed over, because it names
+no target and opens no socket.
+
 ### The search arms
 
 The query is a real exfiltration sink: the query string *is* the payload, and it reaches the
@@ -319,9 +404,24 @@ vendor before any result comes back. What this package filters is the hosts name
 `site:attacker.example <secret>` does not go out. **A plain-text secret in a plain-text query
 still reaches the vendor**, and no host policy changes that.
 
+What counts as a host named in a query is a heuristic, and it is deliberately asymmetric. A
+destination written as a URL, or after `site:` / `inurl:` / `link:`, is read as a host whatever
+its top-level label. A **bare** dotted token in prose is only read as a host when its top-level
+label is a delegated domain that is not also a common file extension — so `index.js`,
+`readme.md`, `setup.py`, `asp.net` and `file.tar.gz` are words in a question rather than
+destinations, and an ordinary developer query is not refused. A host read out of prose never
+enters the host memory and never appears in `report --suggest`, because a word in a question is
+not a connection anything made.
+
+A query longer than `search.maxQueryLength` is refused rather than scanned: the hosts in it
+cannot be enumerated inside a budget, and this scan runs synchronously inside the tool guard,
+where the agent loop, the UI and every timer wait on it.
+
 The vendor's transport is not ours to govern — every shipped provider calls bare global `fetch`
 against its own configured `baseURL`. What is governed is the result: a source whose host the
-policy denies is dropped before the model sees it.
+policy denies is dropped before the model sees it. A source URL that does not parse is dropped
+too, and recorded as `(unparsed-source)` with a digest — a vendor string never becomes a
+hostname in a record.
 
 The guarded search provider wraps a vendor provider named in `search.delegate`, imported at
 first use. **Without a delegate it reports itself unusable**, so the profile's own search route
@@ -333,7 +433,9 @@ A closed vocabulary, borrowed from Codex, so the model gets something it can act
 a timeout:
 
 `blocked-by-allowlist` · `blocked-by-denylist` · `blocked-by-private-address` ·
-`blocked-by-scheme` · `blocked-by-credentials` · `blocked-by-redirect`
+`blocked-by-scheme` · `blocked-by-credentials` · `blocked-by-redirect` ·
+`blocked-by-url-length` · `blocked-by-invalid-url` · `blocked-by-invalid-argument` ·
+`blocked-by-query-length`
 
 ```
 dsh-netguard refused this request to paste.example: blocked-by-allowlist. Ask the user to add
@@ -393,37 +495,70 @@ one is the reason to run the two packages together: the forwarder already emits 
 1007 for every tool call, so the same key on a 4001 record answers *which tool call opened this
 connection* — at tool-call granularity, which no other harness can do.
 
+**When the join hits.** The provider is handed `{ url }` and nothing else, so the call id comes
+from the tool guard, which notes `url → identity` for the provider to look up moments later, and
+`turn`/`step` come from the `tool/call` session event. Both maps are bounded and lossy on
+purpose — an unbounded map costs the agent its memory. A record the join missed carries
+`dst_endpoint`, the verdict and the digests, but no `correlation_uid` and no `turn`; it is a
+connection without a named cause rather than a wrong one.
+
 ### The privacy lane
 
-Verbatim: hostname, port, resolved IP address, verdict, matched rule id, tool name.
-Digested: the full URL, and any search query, as `HMAC-SHA256(key, value)` truncated to 128
-bits, with the length beside it. The digest is stable, so a SIEM can still join on it; nobody
-reading the spool learns the value. This mirrors `dsh-ocsf-forwarder`'s lane rule exactly, so
-records from both packages can sit in one index without one of them being the leak.
+Verbatim: **a validated hostname**, port, resolved IP address, verdict, matched rule id, tool
+name. Digested: the full URL, any search query, and any string that was supposed to be a
+hostname and is not — as `HMAC-SHA256(key, value)` truncated to 128 bits, with the length beside
+it. The digest is stable, so a SIEM can still join on it; nobody reading the spool learns the
+value. This mirrors `dsh-ocsf-forwarder`'s lane rule exactly, so records from both packages can
+sit in one index without one of them being the leak.
+
+"Validated" is the whole point of the word. `dst_endpoint.hostname`, `observables[].value` and
+`message` only ever carry a plain host spelling (`[a-z0-9.:_-]`) or one of these markers, and
+the value a marker stands in for rides as a digest in the extension attributes:
+
+| Marker | Stands in for |
+|---|---|
+| `(query)` | a decision about a search query rather than about one target |
+| `(non-string-argument)` | a `url` or `query` argument that was not a string |
+| `(unparsed-url)` | text that is not a URL with a host this package can decide |
+| `(unparsed-source)` | a vendor search result whose source URL does not parse |
+| `(unrecordable-host)` | a hostname carrying characters a verbatim field may not hold |
+
+That last one exists because WHATWG `URL` keeps `'`, `"`, a backtick, `$`, `;`, `,` and `{` in a
+hostname. `report --suggest` applies the same rule again on the way out: it writes a host into
+YAML only when it matches `[a-z0-9._-]+`, so nothing a vendor or a model chose can add a line to
+the allow list you paste into `cordis.yml`.
 
 ```json
 {
   "class_uid": 4001, "category_uid": 4, "type_uid": 400105,
-  "activity_id": 5, "action_id": 2, "disposition_id": 2, "severity_id": 3,
+  "activity_id": 5, "action_id": 2, "disposition_id": 2, "severity_id": 3, "status_id": 2,
   "is_alert": false, "time": 1755300000000,
-  "message": "netguard refused paste.example: blocked-by-allowlist",
+  "message": "netguard refused paste.example: blocked-by-denylist",
   "metadata": {
     "product": { "name": "dsh-netguard", "vendor_name": "dsh-security-plugins", "version": "0.1.0" },
     "version": "1.9.0", "profiles": ["security_control", "host"],
     "log_provider": "deepseek-harness", "log_name": "netguard",
-    "uid": "session-88:4", "correlation_uid": "session-88:call-2", "sequence": 4
+    "uid": "session-88:4", "correlation_uid": "session-88:call-2", "sequence": 4,
+    "logged_time": 1755300000000
   },
   "dst_endpoint": { "hostname": "paste.example", "port": 443, "svc_name": "https" },
   "connection_info": { "direction_id": 2, "protocol_name": "tcp" },
   "firewall_rule": { "uid": "deny:paste.example", "name": "blocked-by-denylist" },
+  "observables": [{ "name": "dst_endpoint.hostname", "type_id": 1, "value": "paste.example" }],
   "unmapped": { "dsh": {
     "v": 1, "kind": "fetch", "mode": "enforce", "verdict": "denied", "enforced": true,
-    "reason": "blocked-by-allowlist", "tool": "web_fetch", "session_id": "session-88",
-    "call_id": "call-2", "turn": 1, "step": 0, "first_seen_host": true,
+    "reason": "blocked-by-denylist", "rule": "deny:paste.example", "tool": "web_fetch",
+    "session_id": "session-88", "call_id": "call-2", "root_call_id": "call-2",
+    "turn": 1, "step": 0, "decision_id": "netguard-…", "first_seen_host": false,
     "url_digest": "hmac-sha256:9f2a…", "url_length": 63, "has_query": true, "hop": 0
   } }
 }
 ```
+
+`device` and `src_endpoint` are left out of that listing only for length; every record carries
+both. `firewall_rule` appears only when a pattern decided the request, and its `name` is the
+same reason the attributes carry — an allowlist denial names no rule, so it has no
+`firewall_rule` at all.
 
 A spool write failure is reported on `process.stderr` **and** `ctx.logger`, then swallowed: the
 spool is evidence, not enforcement, and letting a full disk turn every request into a refusal
@@ -462,18 +597,24 @@ as a record is counted and reported rather than trusted.
   gap to be closed at this layer; it needs the sandbox.
 - **The model channel is not governed**, and it is the dominant exfiltration path.
 - **The spool is not rotated.** This package writes one record per decision — a few lines per
-  session, not one per session event — so the file grows slowly. Point `logrotate` at it on a
-  long-lived installation.
+  session, not one per session event — so the file grows slowly. Point `logrotate` at the spool
+  on a long-lived installation, and at neither sidecar; see the configuration section.
 - **No public suffix list.** The wildcard check is a documented approximation; see the grammar
   section.
 - **A query with no host in it is not filtered.** A host allowlist has nothing to decide there.
+- **A bare host in prose is read by a heuristic.** A token ending in a top-level label this
+  package does not list — or in one that is also a common file extension — is a word, not a
+  destination. `site:`, `inurl:`, `link:` and a full URL are read as destinations regardless.
+- **The tool-call join is bounded and lossy.** A record whose call the join could not match
+  carries no `correlation_uid`; the two maps are capped so a long session cannot grow them
+  without limit.
 - **Without a `search.delegate`, result URLs are not filtered** — only the outbound query is
   checked, because the vendor provider the seam selected answers the seam directly and never
   passes through this package.
 - **A fetch provider composed *after* this plugin is not detected at mount.** It surfaces as
   `WEB_PROVIDER_AMBIGUOUS` at the first `web_fetch` instead.
-- **The mount check reads two private fields** of the live `WebRuntime` (`fetchProviders` and
-  `fetchProviderId`). That is a deliberate coupling to a harness version; when a rename makes
+- **The mount check reads private fields** of the live `WebRuntime` (`fetchProviders`,
+  `searchProviders`, `fetchProviderId`, `searchProviderId`). That is a deliberate coupling to a harness version; when a rename makes
   them unreadable, the check says it could not verify the composition and tells you to pin the
   provider explicitly rather than inventing a verdict. See [ADR.md](ADR.md).
 - **`globalThis.fetch` is not patched and the undici global dispatcher is not touched.** Both

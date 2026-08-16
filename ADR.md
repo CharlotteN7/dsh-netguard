@@ -110,11 +110,20 @@ notes `url → identity` for the provider to look up moments later. Both maps ar
 lossy on purpose — a missed join costs a record its `correlation_uid`, an unbounded map costs
 the agent its memory.
 
-Which arm writes the record follows one rule: **the arm closest to the wire owns it.** An
-enforced denial in the guard means the provider never runs, so the guard records it; otherwise
-the provider records. When `fetch.enabled: false` there is no provider, so the guard records
-everything. The same rule for search: the guard owns the record unless a delegate is configured,
-in which case the provider does. Without it, every allowed `web_fetch` would be spooled twice.
+Which arm writes the record for a *policy decision* follows one rule: **the arm closest to the
+wire owns it.** An enforced denial in the guard means the provider never runs, so the guard
+records it; otherwise the provider records. When `fetch.enabled: false` there is no provider, so
+the guard records every policy decision. The same rule for search: the guard owns the record
+unless a delegate is configured, in which case the provider does. Without the rule, every
+allowed `web_fetch` would be spooled twice.
+
+One class of decision is outside that rule and always belongs to the guard: a call it cannot
+turn into a target at all. A `url` argument that is not a string, and text that is not a URL,
+never reach a provider that could record them, and the provider's own refusal is a thrown error
+rather than a record. The guard therefore writes those itself, against a marker in place of a
+hostname — otherwise a request that named no host we could decide would be invisible to the
+audit lane, which is the one lane that is supposed to be total. A call carrying no `url` or
+`query` key at all is the exception: it names no target and opens no socket.
 
 The guard is registered **unscoped**, on a plain context. Verified in the sibling `dsh-dlp`
 work: a global guard applies to every agent, every `run_code` inner sub-call and every subagent
@@ -164,7 +173,10 @@ So the delegate is named in configuration and imported at first use, from the ru
 installation's own module graph. **Without a delegate the provider reports `available(): false`**,
 which is the important half: the seam ignores an unusable provider, so mounting this plugin never
 displaces a profile's existing search route and never creates the ambiguity the fetch side has to
-be configured around.
+be configured around. The one composition that has to fail loud is a profile that *pins*
+`web.searchProvider: dsh-netguard` without configuring a delegate: the seam then selects a
+provider that answers nothing, so the mount check refuses it rather than letting every
+`web_search` fail at call time.
 
 The outbound-query guard covers the un-delegated composition, and the README says plainly that
 result URLs are unfiltered there.
@@ -184,14 +196,15 @@ structured `{ name, code }` error metadata — attached only for `HarnessError` 
 absent. The denial reason still reaches the model in the message, which is the channel the model
 reads.
 
-## 10. `blocked-by-scheme` needs a host to report; a hostless URL does not get it
+## 10. `blocked-by-scheme` needs a host to report; a hostless URL gets a marker
 
 `gopher://host/`, `ftp://host/` and `ws://host/` are refused as `blocked-by-scheme`, with a
 record naming the host they would have reached. `file:///etc/passwd` and `data:text/plain,…`
 have no host at all — WHATWG `URL` requires a non-empty host only for special schemes — so there
-is no endpoint to put in a `dst_endpoint` and no policy decision to record. Those are reported as
-an invalid URL whose message still names the scheme, because that is what the model has to
-change.
+is no endpoint to put in a `dst_endpoint`. The message the model receives still names the
+scheme, because that is what it has to change, and the record is written against the
+`(unparsed-url)` marker with a digest of the argument: a decision with no endpoint is still a
+decision, and dropping it would put a hole in the one lane that is supposed to be total.
 
 ## 11. The redirect rules are not governed by `mode`
 
@@ -242,3 +255,55 @@ it. Three arms use `/* v8 ignore */` with a stated reason:
 Reaching the bar changed the code twice, both times for the better: an unreachable
 empty-hostname guard in `identifyHost` came out (WHATWG `URL` refuses an empty host for a
 special scheme), and the fleet label/tag lists are now computed once rather than twice.
+
+## 15. Length is a policy decision, and it is governed by `mode`
+
+`fetch.maxUrlLength` and `search.maxQueryLength` bound work this package does synchronously
+inside `ctx.tools.guard()`, so both have to exist. What they are *not* is a parse failure. An
+over-length URL still names a host, so it is parsed, decided against the host policy, and denied
+with that host's verdict — or with `blocked-by-url-length` when the allow list covers the host.
+Treating it as unparseable is what let a padded URL reach a denied host with nothing spooled.
+
+Both are therefore ordinary denials and audit mode relaxes them, exactly as it relaxes an
+allowlist denial: audit mode's contract is that every decision is recorded and no request is
+refused, and a limit that still refused in audit mode would be a second, undocumented mode. The
+transport hygiene that audit mode does *not* relax is the redirect rules (§11), which are the
+shipped provider's own behaviour rather than this package's policy.
+
+An over-length query is the one asymmetry, and it is fail-closed by construction: the hosts in
+it are never enumerated, so `checkQuery` cannot say the query is clean. It reports a denial
+against the `(query)` marker, which audit mode records and permits like any other.
+
+## 16. A bare host in prose is a heuristic, and it is deliberately conservative
+
+The outbound-query filter reads hosts out of model-authored text. Three spellings are read as
+destinations: a full URL, a `site:` / `inurl:` / `link:` argument, and a bare dotted token. Only
+the third is ambiguous, and it is ambiguous in the direction that hurts: `index.js`,
+`readme.md`, `setup.py`, `asp.net` and `file.tar.gz` are filenames in ordinary developer
+questions, and evaluating them against an egress allowlist refuses the work rather than the
+attack. Measured on eleven realistic queries, the earlier "any dotted token ending in two or
+more letters" rule refused nine.
+
+So a bare token needs a top-level label that is both delegated and not a common source-file or
+archive extension. That list is an approximation of the root zone for the same reason §13 keeps
+no public suffix list, and it is only ever consulted for the bare form: the spellings an
+exfiltration query actually uses are unaffected by it.
+
+A bare match is also never treated as a sighting. It does not enter the host memory and it does
+not appear in `report --suggest`, because a word inside a question is not a connection anything
+made, and an allow list derived from words is worse than no allow list.
+
+## 17. The verbatim lane validates, and `report --suggest` validates again
+
+`dst_endpoint.hostname`, `observables[].value` and `message` are verbatim fields. Two sources
+can put a string there that is not a hostname: a vendor search result, whose `url` is whatever
+the vendor sent, and WHATWG `URL` itself, which keeps `'`, `"`, a backtick, `$`, `;`, `,` and
+`{` inside a hostname. `report --suggest` renders those fields into single-quoted YAML that the
+README tells operators to paste into `cordis.yml`, and a quote inside a hostname closes the
+quoting.
+
+The rule is one line, applied at the single place a host reaches a record: a plain host spelling
+or a fixed marker, with the original value carried as a keyed digest in the extension
+attributes. `report --suggest` then applies its own `[a-z0-9._-]+` test on the way out, because
+the spool is a durable boundary this package reads back — written by other versions, appended
+to under crash — and a reader that trusts what it parsed is the same defect one layer down.
