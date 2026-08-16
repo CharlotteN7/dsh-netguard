@@ -16,8 +16,8 @@ mounted plugin.
 
 **It is not an egress firewall.** It governs `web_fetch` and `web_search`. It does not see one
 byte sent by `bash`, `run_code`, a terminal session, an MCP server, or a delegated external
-agent. That needs confinement at the sandbox layer, which is out of scope for 0.1 and scoped in
-[PLAN.md §7](PLAN.md).
+agent. Governing those needs confinement at the sandbox or network layer, which this package
+does not provide.
 
 **It is not a containment boundary.** It runs in-process, at the agent's own uid. `run_code`
 executes model-authored TypeScript in a worker thread with `fetch`, `node:net` and
@@ -356,9 +356,9 @@ typical starting set costs:
 | `pypi.org`, `files.pythonhosted.org` | `pip` | the same publish channel |
 
 Derive the LLM host from your resolved configuration rather than hardcoding it, or self-hosted
-and gateway deployments break. In 0.1 that entry buys nothing directly — this package does not
+and gateway deployments break. That entry buys nothing here directly — this package does not
 govern the model channel, which is the harness's own adapter calling global `fetch` — so it
-matters when a network-layer control (PLAN.md §7) consumes the same list.
+matters only to a network-layer control that consumes the same list.
 
 ---
 
@@ -456,7 +456,7 @@ as a record is counted and reported rather than trusted.
 
 ---
 
-## Known limitations and deferred work
+## Known limitations
 
 - **`bash`, `run_code`, terminals, MCP servers and delegated agents are not governed.** Not a
   gap to be closed at this layer; it needs the sandbox.

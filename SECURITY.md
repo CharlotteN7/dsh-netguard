@@ -29,7 +29,7 @@ otherwise.
 
 This plugin is **not an egress firewall and not a containment boundary**. It governs
 `web_fetch` and `web_search`, in-process, at the agent's own uid. The following are documented
-limits, described in README.md and PLAN.md §6 — not vulnerabilities:
+limits, described in README.md — not vulnerabilities:
 
 - anything sent by `bash`, `run_code`, a terminal session, an MCP server, or a delegated
   external agent, none of which this release sees;
