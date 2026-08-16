@@ -1,0 +1,31 @@
+# Bundle layer applied when a profile lists this package in dsh.profile.bundles.
+# The row references the package by NAME so Node resolution finds the installed
+# code from the profile directory.
+#
+# `dshHomePath` is provided on the root context by the app boot, so a layer's
+# `!!js` config expressions can reach it. A profile's own cordis.patch.yml
+# overrides this row by id; a patch REPLACES a row's whole `config`, so an
+# override must restate every key it wants to keep.
+#
+# This layer deliberately does NOT touch the `web` or `tool-web` rows.
+# `web.fetchProvider` is a deployment decision — pinning it here would silently
+# replace whatever provider a profile already selected — and `tool-web`'s
+# `fetch: false` in the base bundle means `web_fetch` is not even registered
+# until a deployment turns it on. README.md carries the composition a profile
+# needs, and `apply()` fails loud at mount when it is missing.
+#
+# The default mode is `audit`: every decision is recorded, nothing is refused.
+# Audit mode is not a control. Run `dsh-netguard report --suggest` to turn the
+# observed hosts into an allow list, then set `mode: enforce`.
+#
+# The allow list ships EMPTY, which under `mode: enforce` denies everything. A
+# guessed default is simultaneously too wide and too narrow; audit mode exists
+# to derive the real one.
+- insert:
+    - id: dsh-netguard
+      name: 'dsh-netguard'
+      config:
+        mode: audit
+        allow: []
+        deny: []
+        spoolPath: !!js dshHomePath('netguard/decisions.ocsf.jsonl')
