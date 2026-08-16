@@ -260,7 +260,7 @@ export function apply(ctx: Context, config: Config, options: ApplyOptions = {}):
         { hop: 0, url_type: argument.type },
       )
       if (!enforced) return undefined
-      return argumentDenialMessage('blocked-by-invalid-argument', `the url argument is a ${argument.type}, not a string`)
+      return argumentDenialMessage('blocked-by-invalid-argument', `the url argument is of type "${argument.type}", not a string`)
     }
     const raw = argument.value
     targets.note(raw, identity)
@@ -317,7 +317,7 @@ export function apply(ctx: Context, config: Config, options: ApplyOptions = {}):
         { query_type: argument.type },
       )
       if (!enforced) return undefined
-      return argumentDenialMessage('blocked-by-invalid-argument', `the query argument is a ${argument.type}, not a string`)
+      return argumentDenialMessage('blocked-by-invalid-argument', `the query argument is of type "${argument.type}", not a string`)
     }
     const query = argument.value
     targets.note(query, identity)

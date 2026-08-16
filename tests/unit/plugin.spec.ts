@@ -215,7 +215,7 @@ describe('the tool-tier guard', () => {
 
     const reason = plugin.guards[0]?.(execution('web_search', { query: 7 }))
 
-    expect(reason).toContain('the query argument is a number, not a string')
+    expect(reason).toContain('the query argument is of type "number", not a string')
     expect(dshOf(plugin.records()[0]!)).toMatchObject({ verdict: 'denied', query_type: 'number' })
   })
 
