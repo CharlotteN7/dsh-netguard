@@ -256,6 +256,13 @@ Reaching the bar changed the code twice, both times for the better: an unreachab
 empty-hostname guard in `identifyHost` came out (WHATWG `URL` refuses an empty host for a
 special scheme), and the fleet label/tag lists are now computed once rather than twice.
 
+What the bar does not catch is a vacuous assertion. `plugin.spec.ts` called the floor as
+`plugin.guards[0]?.(…)`, which is `undefined` when the mount registered no guard, so every test
+asserting that the guard abstains passed against no guard at all — 100% coverage throughout, since
+`apply` still ran. The mount helper now binds the guard through an accessor that throws when none
+was registered. Verified by removing the registration from `apply`: three of those tests passed
+before the change and fail after it.
+
 ## 15. Length is a policy decision, and it is governed by `mode`
 
 `fetch.maxUrlLength` and `search.maxQueryLength` bound work this package does synchronously

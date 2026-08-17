@@ -64,9 +64,18 @@ async function mount(overrides: Partial<Config> = {}, options: {
       ...overrides,
     }, { resolve: async () => [{ address: '127.0.0.1', family: 4 }] })
   }
+  // Bound rather than indexed: `guards[0]?.(…)` is `undefined` when the mount
+  // registered no guard at all, so every "abstains" assertion below would pass
+  // against no floor.
+  const guard = (exec: ToolExecution): string | undefined => {
+    const registered = guards[0]
+    if (registered === undefined) throw new Error('the mount registered no tool guard')
+    return registered(exec)
+  }
   return {
     ctx,
     guards,
+    guard,
     errors,
     spoolPath,
     mounted,
@@ -169,7 +178,7 @@ describe('the registrations', () => {
     plugin.mounted()
 
     expect(plugin.searchProviders().has('dsh-netguard')).toBe(false)
-    expect(plugin.guards[0]?.(execution('web_search', { query: 'site:evil.test x' }))).toBeUndefined()
+    expect(plugin.guard(execution('web_search', { query: 'site:evil.test x' }))).toBeUndefined()
   })
 })
 
@@ -178,7 +187,7 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'enforce' })
     plugin.mounted()
 
-    expect(plugin.guards[0]?.(execution('bash', { command: 'curl https://evil.test' }))).toBeUndefined()
+    expect(plugin.guard(execution('bash', { command: 'curl https://evil.test' }))).toBeUndefined()
     expect(plugin.records()).toEqual([])
   })
 
@@ -186,8 +195,8 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'enforce' })
     plugin.mounted()
 
-    expect(plugin.guards[0]?.(execution('web_fetch', {}))).toBeUndefined()
-    expect(plugin.guards[0]?.(execution('web_search', {}))).toBeUndefined()
+    expect(plugin.guard(execution('web_fetch', {}))).toBeUndefined()
+    expect(plugin.guard(execution('web_search', {}))).toBeUndefined()
     expect(plugin.records()).toEqual([])
   })
 
@@ -200,7 +209,7 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'enforce', allow: [], fetch: { enabled: false } })
     plugin.mounted()
 
-    const reason = plugin.guards[0]?.(execution('web_fetch', { url: value }))
+    const reason = plugin.guard(execution('web_fetch', { url: value }))
 
     expect(reason).toContain('blocked-by-invalid-argument')
     expect(plugin.records()).toHaveLength(1)
@@ -213,7 +222,7 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'enforce', allow: [] })
     plugin.mounted()
 
-    const reason = plugin.guards[0]?.(execution('web_search', { query: 7 }))
+    const reason = plugin.guard(execution('web_search', { query: 7 }))
 
     expect(reason).toContain('the query argument is of type "number", not a string')
     expect(dshOf(plugin.records()[0]!)).toMatchObject({ verdict: 'denied', query_type: 'number' })
@@ -223,9 +232,9 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'audit', allow: [], fetch: { enabled: false } })
     plugin.mounted()
 
-    expect(plugin.guards[0]?.(execution('web_fetch', { url: ['https://evil.test/'] }))).toBeUndefined()
-    expect(plugin.guards[0]?.(execution('web_fetch', { url: 'not a url' }))).toBeUndefined()
-    expect(plugin.guards[0]?.(execution('web_search', { query: 7 }))).toBeUndefined()
+    expect(plugin.guard(execution('web_fetch', { url: ['https://evil.test/'] }))).toBeUndefined()
+    expect(plugin.guard(execution('web_fetch', { url: 'not a url' }))).toBeUndefined()
+    expect(plugin.guard(execution('web_search', { query: 7 }))).toBeUndefined()
     expect(plugin.records().map(record => dshOf(record)['reason']))
       .toEqual(['blocked-by-invalid-argument', 'blocked-by-invalid-url', 'blocked-by-invalid-argument'])
     expect(plugin.records().every(record => dshOf(record)['enforced'] === false)).toBe(true)
@@ -235,7 +244,7 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'enforce', allow: ['good.test'] })
     plugin.mounted()
 
-    const reason = plugin.guards[0]?.(execution('web_fetch', { url: 'https://evil.test/x' }))
+    const reason = plugin.guard(execution('web_fetch', { url: 'https://evil.test/x' }))
 
     expect(reason).toContain('blocked-by-allowlist')
     expect(reason).toContain('evil.test')
@@ -247,7 +256,7 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'audit', allow: [] })
     plugin.mounted()
 
-    expect(plugin.guards[0]?.(execution('web_fetch', { url: 'https://evil.test/x' }))).toBeUndefined()
+    expect(plugin.guard(execution('web_fetch', { url: 'https://evil.test/x' }))).toBeUndefined()
     expect(plugin.records()).toEqual([])
   })
 
@@ -255,14 +264,14 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'audit', allow: [], fetch: { enabled: false } })
     plugin.mounted()
 
-    expect(plugin.guards[0]?.(execution('web_fetch', { url: 'https://evil.test/x' }))).toBeUndefined()
+    expect(plugin.guard(execution('web_fetch', { url: 'https://evil.test/x' }))).toBeUndefined()
     expect(dshOf(plugin.records()[0]!)).toMatchObject({ verdict: 'denied', enforced: false, kind: 'guard' })
   })
 
   it('records a permitted call itself when no provider will, and names no rule for an empty allow list', async () => {
     const permitted = await mount({ mode: 'audit', allow: ['*'], fetch: { enabled: false } })
     permitted.mounted()
-    permitted.guards[0]?.(execution('web_fetch', { url: 'https://good.test/x' }))
+    permitted.guard(execution('web_fetch', { url: 'https://good.test/x' }))
 
     expect(dshOf(permitted.records()[0]!)).toMatchObject({ verdict: 'allowed', kind: 'guard' })
     expect(dshOf(permitted.records()[0]!)['reason']).toBeUndefined()
@@ -270,7 +279,7 @@ describe('the tool-tier guard', () => {
 
     const refused = await mount({ mode: 'enforce', allow: [] })
     refused.mounted()
-    refused.guards[0]?.(execution('web_fetch', { url: 'https://evil.test/x' }))
+    refused.guard(execution('web_fetch', { url: 'https://evil.test/x' }))
 
     expect(dshOf(refused.records()[0]!)['rule']).toBeUndefined()
   })
@@ -279,7 +288,7 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'enforce', allow: ['*'], deny: ['evil.test'] })
     plugin.mounted()
 
-    plugin.guards[0]?.(execution('web_search', { query: 'site:evil.test token' }))
+    plugin.guard(execution('web_search', { query: 'site:evil.test token' }))
 
     expect(dshOf(plugin.records()[0]!)['rule']).toBe('deny:evil.test')
   })
@@ -291,7 +300,7 @@ describe('the tool-tier guard', () => {
       { webConfig: { searchProvider: 'dsh-netguard' } },
     )
     enforcing.mounted()
-    enforcing.guards[0]?.(execution('web_search', { query: 'site:evil.test x' }))
+    enforcing.guard(execution('web_search', { query: 'site:evil.test x' }))
 
     expect(dshOf(enforcing.records()[0]!)).toMatchObject({ kind: 'guard', verdict: 'denied' })
 
@@ -300,7 +309,7 @@ describe('the tool-tier guard', () => {
       { webConfig: { searchProvider: 'dsh-netguard' } },
     )
     auditing.mounted()
-    auditing.guards[0]?.(execution('web_search', { query: 'site:evil.test x' }))
+    auditing.guard(execution('web_search', { query: 'site:evil.test x' }))
 
     // Audit mode runs the search, so the provider is the arm that records it.
     expect(auditing.records()).toEqual([])
@@ -310,7 +319,7 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'enforce', allow: ['*'] })
     plugin.mounted()
 
-    expect(plugin.guards[0]?.(execution('web_fetch', { url: 'https://good.test/x' }))).toBeUndefined()
+    expect(plugin.guard(execution('web_fetch', { url: 'https://good.test/x' }))).toBeUndefined()
     expect(plugin.records()).toEqual([])
   })
 
@@ -318,7 +327,7 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'enforce' })
     plugin.mounted()
 
-    expect(plugin.guards[0]?.(execution('web_fetch', { url: 'not a url' }))).toContain('blocked-by-invalid-url')
+    expect(plugin.guard(execution('web_fetch', { url: 'not a url' }))).toContain('blocked-by-invalid-url')
     expect(plugin.records()).toHaveLength(1)
     expect(plugin.records()[0]?.['dst_endpoint']).toMatchObject({ hostname: '(unparsed-url)' })
     expect(dshOf(plugin.records()[0]!)).toMatchObject({ url_length: 9, url_digest: expect.stringContaining('hmac-sha256:') })
@@ -328,7 +337,7 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'enforce' })
     plugin.mounted()
 
-    const reason = plugin.guards[0]?.(execution('web_fetch', { url: 'file:///etc/passwd' }))
+    const reason = plugin.guard(execution('web_fetch', { url: 'file:///etc/passwd' }))
 
     expect(reason).toContain('only http and https are allowed')
     expect(dshOf(plugin.records()[0]!)).toMatchObject({ verdict: 'denied', reason: 'blocked-by-scheme' })
@@ -339,7 +348,7 @@ describe('the tool-tier guard', () => {
     plugin.mounted()
 
     const padded = `https://evil.test/?${'a'.repeat(2100)}`
-    const reason = plugin.guards[0]?.(execution('web_fetch', { url: padded }))
+    const reason = plugin.guard(execution('web_fetch', { url: padded }))
 
     expect(reason).toContain('blocked-by-allowlist')
     expect(plugin.records()).toHaveLength(1)
@@ -350,7 +359,7 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'enforce', allow: ['*'], fetch: { enabled: false, maxUrlLength: 64 } })
     plugin.mounted()
 
-    const reason = plugin.guards[0]?.(execution('web_fetch', { url: `https://good.test/${'a'.repeat(100)}` }))
+    const reason = plugin.guard(execution('web_fetch', { url: `https://good.test/${'a'.repeat(100)}` }))
 
     expect(reason).toContain('blocked-by-url-length')
     expect(dshOf(plugin.records()[0]!)).toMatchObject({ verdict: 'denied', reason: 'blocked-by-url-length' })
@@ -360,7 +369,7 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'enforce', allow: ['good.test'] })
     plugin.mounted()
 
-    const reason = plugin.guards[0]?.(execution('web_search', { query: 'site:evil.test token' }))
+    const reason = plugin.guard(execution('web_search', { query: 'site:evil.test token' }))
 
     expect(reason).toContain('blocked-by-allowlist')
     expect(dshOf(plugin.records()[0]!)).toMatchObject({ kind: 'guard' })
@@ -371,7 +380,7 @@ describe('the tool-tier guard', () => {
     const plugin = await mount({ mode: 'enforce', allow: ['*'] })
     plugin.mounted()
 
-    expect(plugin.guards[0]?.(execution('web_search', { query: 'AKIAIOSFODNN7EXAMPLE leak' }))).toBeUndefined()
+    expect(plugin.guard(execution('web_search', { query: 'AKIAIOSFODNN7EXAMPLE leak' }))).toBeUndefined()
 
     const [record] = plugin.records()
     expect(JSON.stringify(record)).not.toContain('AKIAIOSFODNN7EXAMPLE')
@@ -388,7 +397,7 @@ describe('the tool-tier guard', () => {
       data: { turn: 3, step: 5, callId: 'call-1', name: 'web_fetch', arguments: '{}' },
     } as SessionEvent)
 
-    plugin.guards[0]?.(execution('web_fetch', { url: 'https://evil.test/' }, {
+    plugin.guard(execution('web_fetch', { url: 'https://evil.test/' }, {
       agent: { session: { id: 'session-9' } },
     }))
 
@@ -403,7 +412,7 @@ describe('the tool-tier guard', () => {
     emit({ type: 'tool/result', seq: 2, time: 0, data: { message: { source: { callId: 'call-1' } } } } as unknown as SessionEvent)
     emit({ type: 'user/message', seq: 3, time: 0, data: {} } as unknown as SessionEvent)
 
-    plugin.guards[0]?.(execution('web_fetch', { url: 'https://evil.test/' }))
+    plugin.guard(execution('web_fetch', { url: 'https://evil.test/' }))
 
     expect(dshOf(plugin.records()[0]!)['turn']).toBeUndefined()
   })
@@ -444,7 +453,7 @@ describe('the repo-local policy tier', () => {
     const plugin = await mount({ mode: 'audit', allow: ['*'], policyFile })
     plugin.mounted()
 
-    expect(plugin.guards[0]?.(execution('web_fetch', { url: 'https://evil.test/' })))
+    expect(plugin.guard(execution('web_fetch', { url: 'https://evil.test/' })))
       .toContain('blocked-by-denylist')
   })
 
@@ -452,7 +461,7 @@ describe('the repo-local policy tier', () => {
     const plugin = await mount({ mode: 'enforce', allow: [], policyFile: join(home, 'absent.yml') })
     plugin.mounted()
 
-    expect(plugin.guards[0]?.(execution('web_fetch', { url: 'https://evil.test/' }))).toContain('dsh-netguard refused')
+    expect(plugin.guard(execution('web_fetch', { url: 'https://evil.test/' }))).toContain('dsh-netguard refused')
     expect(plugin.errors).toEqual([])
   })
 
@@ -473,7 +482,7 @@ describe('the repo-local policy tier', () => {
 
     expect(plugin.errors[0]).toContain('ignoring the repo-local policy')
     expect(written.join('')).toContain('ignoring the repo-local policy')
-    expect(plugin.guards[0]?.(execution('web_fetch', { url: 'https://evil.test/' }))).toContain('dsh-netguard refused')
+    expect(plugin.guard(execution('web_fetch', { url: 'https://evil.test/' }))).toContain('dsh-netguard refused')
   })
 })
 
@@ -487,7 +496,7 @@ describe('a spool that cannot be written', () => {
     })
     try {
       plugin.mounted()
-      expect(plugin.guards[0]?.(execution('web_fetch', { url: 'https://evil.test/' }))).toContain('dsh-netguard refused')
+      expect(plugin.guard(execution('web_fetch', { url: 'https://evil.test/' }))).toContain('dsh-netguard refused')
     } finally {
       spy.mockRestore()
     }
@@ -519,7 +528,7 @@ describe('the registered providers, driven through the seam', () => {
     plugin.mounted()
     const url = `http://allowed.test:${String(port)}/page`
     // The guard runs first in a real pipeline; it is what mints the join.
-    plugin.guards[0]?.(execution('web_fetch', { url }, { agent: { session: { id: 'session-4' } } }))
+    plugin.guard(execution('web_fetch', { url }, { agent: { session: { id: 'session-4' } } }))
 
     const result = await plugin.ctx.web.fetch({ url })
 
