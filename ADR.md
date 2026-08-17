@@ -329,3 +329,25 @@ later "tidying" the two into one scheme would recreate the collision.
 `metadata.correlation_uid` stays `<session>:<callId>` in both, because there the *point* is that the
 two packages produce the same value: it is what joins a connection to the tool call that opened it.
 A shared join key and a shared idempotency key are opposite requirements.
+
+## 19. The install uid lives under the harness home, shared with the other producers
+
+`device.uid` is documented as the stable install identity of a machine. Both this package and
+`dsh-ocsf-forwarder` defaulted it to `<spoolPath>.install-uid`, and the two spool paths differ by
+design, so one host minted two uids and its two OCSF producers disagreed about which device they
+were describing. Anything grouping by `device.uid` saw two machines.
+
+Both packages now default to `$DSH_HOME/install-uid`, resolved the way the harness resolves its
+home — `$DSH_HOME` when set to something other than whitespace, otherwise `~/.dsh`. Only the default
+moved: `fleet.installUidPath` still overrides it, still has to be absolute, and an explicit
+`fleet.installUid` still skips the file entirely.
+
+A uid an earlier release left beside the spool is read on first run and written through, because an
+upgrade that re-identifies the host destroys exactly the continuity the sidecar exists to provide.
+On a host where both packages carry a legacy uid the first to mount seeds the shared file and the
+other adopts it; never migrating would leave the two producers permanently disagreeing, which is the
+defect being fixed.
+
+Persisting stays best effort, unchanged: a home this process cannot write is reported and the
+records carry a per-process uid. The forwarder's copy of this helper threw instead, which failed the
+whole mount over an unwritable sidecar; it now behaves as this one does.

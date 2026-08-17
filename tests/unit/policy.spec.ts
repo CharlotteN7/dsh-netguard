@@ -2,7 +2,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { identifyHost, type HostIdentity } from '../../src/address.ts'
 import {
   Config,
@@ -14,7 +14,14 @@ import {
 import { disposeHome, makeHome } from './support.ts'
 
 const home = makeHome('policy')
-afterAll(() => { disposeHome(home) })
+afterAll(() => {
+  vi.unstubAllEnvs()
+  disposeHome(home)
+})
+
+// The install uid is resolved under the harness home, which must be a throwaway
+// one rather than the developer's for every test that does not name its own.
+beforeEach(() => { vi.stubEnv('DSH_HOME', join(home, 'dsh-home')) })
 
 /** Identify a host the tests know is well formed. */
 function host(text: string): HostIdentity {
@@ -128,6 +135,7 @@ describe('the digest key', () => {
   it('reads an environment variable when one is named', () => {
     const policy = resolvePolicy(base({ hmacKey: { source: 'env', variable: 'NETGUARD_KEY' } }), undefined, {
       NETGUARD_KEY: 'e'.repeat(40),
+      DSH_HOME: join(home, 'dsh-home'),
     })
 
     expect(policy.hmacKey).toEqual(Buffer.from('e'.repeat(40)))
@@ -144,10 +152,10 @@ describe('the install uid', () => {
   it('is minted once and reused', () => {
     const path = join(home, 'uid', 'install-uid')
 
-    const first = readOrCreateInstallUid(path)
+    const first = readOrCreateInstallUid(path, undefined)
 
     expect(first).toMatch(/^[0-9a-f-]{36}$/)
-    expect(readOrCreateInstallUid(path)).toBe(first)
+    expect(readOrCreateInstallUid(path, undefined)).toBe(first)
     expect(readFileSync(path, 'utf8').trim()).toBe(first)
   })
 
@@ -155,31 +163,74 @@ describe('the install uid', () => {
     const path = join(home, 'empty-uid')
     writeFileSync(path, '\n')
 
-    expect(readOrCreateInstallUid(path)).toMatch(/^[0-9a-f-]{36}$/)
+    expect(readOrCreateInstallUid(path, undefined)).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('sits under the harness home, so this machine has one device uid across the suite', () => {
+    const dshHome = join(home, 'shared-home')
+    const first = resolvePolicy({ spoolPath: join(home, 'one.jsonl') }, undefined, { DSH_HOME: dshHome })
+    // A second plugin with its own spool is still the same machine.
+    const second = resolvePolicy({ spoolPath: join(home, 'two.jsonl') }, undefined, { DSH_HOME: dshHome })
+
+    expect(first.fleet.installUid).toMatch(/^[0-9a-f-]{36}$/)
+    expect(second.fleet.installUid).toBe(first.fleet.installUid)
+    expect(readFileSync(join(dshHome, 'install-uid'), 'utf8').trim()).toBe(first.fleet.installUid)
+  })
+
+  it('carries over a uid an earlier release left beside the spool', () => {
+    const spoolPath = join(home, 'legacy.jsonl')
+    const dshHome = join(home, 'legacy-home')
+    writeFileSync(`${spoolPath}.install-uid`, 'laptop-17\n')
+
+    const policy = resolvePolicy({ spoolPath }, undefined, { DSH_HOME: dshHome })
+
+    expect(policy.fleet.installUid).toBe('laptop-17')
+    expect(readFileSync(join(dshHome, 'install-uid'), 'utf8').trim()).toBe('laptop-17')
+  })
+
+  it('prefers the uid under the harness home over the one beside the spool', () => {
+    const spoolPath = join(home, 'both.jsonl')
+    const dshHome = join(home, 'both-home')
+    writeFileSync(`${spoolPath}.install-uid`, 'laptop-17\n')
+    readOrCreateInstallUid(join(dshHome, 'install-uid'), undefined)
+    const shared = readFileSync(join(dshHome, 'install-uid'), 'utf8').trim()
+
+    expect(resolvePolicy({ spoolPath }, undefined, { DSH_HOME: dshHome }).fleet.installUid).toBe(shared)
+  })
+
+  it('mints at the configured path, without reading the sidecar an earlier release left', () => {
+    const spoolPath = join(home, 'configured.jsonl')
+    const installUidPath = join(home, 'fleet.uid')
+    writeFileSync(`${spoolPath}.install-uid`, 'laptop-17\n')
+
+    const uid = resolvePolicy({ spoolPath, fleet: { installUidPath } }).fleet.installUid
+
+    expect(uid).toMatch(/^[0-9a-f-]{36}$/)
+    expect(readFileSync(installUidPath, 'utf8').trim()).toBe(uid)
   })
 
   it('is minted in memory rather than failing the mount when it cannot be persisted', () => {
-    // The spool directory is not always writable, and refusing to mount over it
-    // is the outage `SpoolSink.write` deliberately refuses to cause.
+    // The harness home is not always writable, and refusing to mount over it is
+    // the outage `SpoolSink.write` deliberately refuses to cause.
     const unwritable = join(home, 'blocked')
     writeFileSync(unwritable, 'a file where a directory would have to be\n')
     const failures: unknown[] = []
 
-    const uid = readOrCreateInstallUid(join(unwritable, 'install-uid'), error => failures.push(error))
+    const uid = readOrCreateInstallUid(join(unwritable, 'install-uid'), undefined, error => failures.push(error))
 
     expect(uid).toMatch(/^[0-9a-f-]{36}$/)
     expect(failures).toHaveLength(1)
   })
 
-  it('reports a spool this process cannot write to, and still resolves a policy', () => {
+  it('reports a harness home this process cannot write to, and still resolves a policy', () => {
     const unwritable = join(home, 'blocked-2')
     writeFileSync(unwritable, 'a file where a directory would have to be\n')
     const failures: unknown[] = []
 
     const policy = resolvePolicy(
-      { spoolPath: join(unwritable, 'spool.jsonl') },
+      { spoolPath: join(home, 'spool.jsonl') },
       undefined,
-      process.env,
+      { DSH_HOME: unwritable },
       error => failures.push(error),
     )
 
@@ -191,8 +242,9 @@ describe('the install uid', () => {
     const unwritable = join(home, 'blocked-3')
     writeFileSync(unwritable, 'a file where a directory would have to be\n')
 
-    expect(readOrCreateInstallUid(join(unwritable, 'install-uid'))).toMatch(/^[0-9a-f-]{36}$/)
-    expect(resolvePolicy({ spoolPath: join(unwritable, 'spool.jsonl') }).fleet.installUid).toMatch(/^[0-9a-f-]{36}$/)
+    expect(readOrCreateInstallUid(join(unwritable, 'install-uid'), undefined)).toMatch(/^[0-9a-f-]{36}$/)
+    expect(resolvePolicy({ spoolPath: join(home, 'spool.jsonl') }, undefined, { DSH_HOME: unwritable })
+      .fleet.installUid).toMatch(/^[0-9a-f-]{36}$/)
   })
 
   it('is taken from the configuration when a deployment supplies one', () => {

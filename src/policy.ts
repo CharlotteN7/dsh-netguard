@@ -21,11 +21,12 @@
 
 import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { JSON_SCHEMA, load } from 'js-yaml'
 import z from '@deepseek-ai/schemastery'
 import { overlapsUnopenable, parseCidr, type Cidr } from './address.ts'
 import { PolicyError } from './errors.ts'
+import { resolveDshHome } from './home.ts'
 import { HostPolicy } from './hosts.ts'
 
 /** Whether a decision is only recorded, or also refused. */
@@ -373,36 +374,57 @@ function resolveOpenedAddresses(entries: readonly string[]): readonly Cidr[] {
   })
 }
 
+/** Name of the install uid file under the harness home. */
+const INSTALL_UID_NAME = 'install-uid'
+
+/** The uid one file holds, or `undefined` when there is none there to read. */
+function readInstallUid(path: string): string | undefined {
+  let text: string
+  try {
+    text = readFileSync(path, 'utf8')
+  } catch {
+    // Any read failure: absent on first run, and unreadable is the same
+    // answer — this process has no persisted uid at that path.
+    return undefined
+  }
+  const uid = text.trim()
+  return uid.length === 0 ? undefined : uid
+}
+
 /**
  * Read the persisted install uid, minting one on first run.
  *
  * A hostname is not an identity: it changes when a laptop is renamed and
- * collides across a fleet built from one image.
+ * collides across a fleet built from one image. The uid lives under the harness
+ * home rather than beside this plugin's spool so that `dsh-ocsf-forwarder`,
+ * whose spool is elsewhere, reports the same `device.uid` for this machine.
  *
- * Persisting it is best effort. A spool directory this process cannot write is
- * a reason for records to carry a per-process uid, not a reason to refuse the
+ * Persisting it is best effort. A directory this process cannot write is a
+ * reason for records to carry a per-process uid, not a reason to refuse the
  * mount — that is the outage `SpoolSink.write` deliberately refuses to cause,
  * and failing here would cause it one step earlier.
  * @param path - where the uid is kept.
+ * @param legacyPath - where releases up to 0.1.0 kept it, carried over so an
+ *   upgrade does not re-identify the host; `undefined` when the deployment
+ *   named the path itself.
  * @param onFailure - notified when the uid cannot be persisted.
  * @returns the uid this installation reports as `device.uid`.
  */
-export function readOrCreateInstallUid(path: string, onFailure: (error: unknown) => void = () => {}): string {
-  try {
-    const existing = readFileSync(path, 'utf8').trim()
-    if (existing.length > 0) return existing
-  } catch {
-    // Any read failure: absent on first run, and unreadable is the same
-    // answer — this process has no persisted uid to report.
-  }
-  const minted = randomUUID()
+export function readOrCreateInstallUid(
+  path: string,
+  legacyPath: string | undefined,
+  onFailure: (error: unknown) => void = () => {},
+): string {
+  const persisted = readInstallUid(path)
+  if (persisted !== undefined) return persisted
+  const uid = (legacyPath === undefined ? undefined : readInstallUid(legacyPath)) ?? randomUUID()
   try {
     mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, `${minted}\n`, { mode: 0o640 })
+    writeFileSync(path, `${uid}\n`, { mode: 0o640 })
   } catch (error: unknown) {
     onFailure(error)
   }
-  return minted
+  return uid
 }
 
 /** Validate one positive finite limit. */
@@ -499,12 +521,17 @@ export function resolvePolicy(
       labels: labels.length === 0 ? undefined : labels,
       tags: tags.length === 0 ? undefined : tags,
       installUid: config.fleet?.installUid
-        ?? readOrCreateInstallUid(
-          config.fleet?.installUidPath === undefined
-            ? `${spoolPath}.install-uid`
-            : assertAbsolutePath('fleet.installUidPath', config.fleet.installUidPath),
-          onFailure,
-        ),
+        ?? (config.fleet?.installUidPath === undefined
+          ? readOrCreateInstallUid(
+            join(resolveDshHome(env), INSTALL_UID_NAME),
+            `${spoolPath}.install-uid`,
+            onFailure,
+          )
+          : readOrCreateInstallUid(
+            assertAbsolutePath('fleet.installUidPath', config.fleet.installUidPath),
+            undefined,
+            onFailure,
+          )),
     },
     extensionName: config.extension?.name ?? 'dsh',
     extensionUid: config.extension?.uid,

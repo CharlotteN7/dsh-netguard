@@ -218,7 +218,7 @@ cover is a fetch provider composed *after* this plugin: that one surfaces as
       labels: [prod]
       tags: { team: security }           # metadata.tags[]
       installUid: laptop-7               # skips the sidecar entirely when you set it
-      installUidPath: /var/log/dsh/netguard.install-uid   # absolute; default <spoolPath>.install-uid
+      installUidPath: /var/log/dsh/netguard.install-uid   # absolute; default $DSH_HOME/install-uid
 ```
 
 **Every path is required to be absolute.** A relative one resolves against the process's working
@@ -226,12 +226,18 @@ directory, which for `dsh` is the workspace — the same directory the repo-loca
 defended against — so a relative `spoolPath` puts the audit trail somewhere the agent it records
 can rewrite. A relative path fails the mount.
 
-**Two sidecar files sit beside the spool**, both created on first use:
+**Two sidecar files are created on first use:**
 
 | File | Holds | Matters because |
 |---|---|---|
 | `<spoolPath>.hosts` | every host seen, with first/last sighting and counts | `is_alert` on a first-seen host, and `report --suggest` |
-| `<spoolPath>.install-uid` | one minted UUID | `device.uid`, which is stable across a rename and unique across a fleet imaged from one template |
+| `$DSH_HOME/install-uid` | one minted UUID | `device.uid`, which is stable across a rename and unique across a fleet imaged from one template |
+
+The uid sits under the harness home rather than beside the spool because `dsh-ocsf-forwarder`
+spools elsewhere and reads the same file: one machine has to report one `device.uid`, or every SOC
+query that groups by device splits this host in two. A uid a release up to `0.1.0` left at
+`<spoolPath>.install-uid` is read on first run and written through to the new path, so upgrading
+does not re-identify the host.
 
 Point `logrotate` at the spool only. The two sidecars are rewritten in place rather than
 appended to, and rotating them costs the installation its host memory and its `device.uid`:
@@ -247,7 +253,7 @@ appended to, and rotating them costs the installation its host memory and its `d
 }
 ```
 
-Set `fleet.installUid` yourself and the uid sidecar is never written. A spool directory this
+Set `fleet.installUid` yourself and the uid sidecar is never written. A harness home this
 process cannot write is reported on stderr and the logger and then continues with an
 in-memory uid, because losing a stable `device.uid` is a smaller loss than refusing to mount.
 
