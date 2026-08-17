@@ -1,0 +1,174 @@
+---
+title: Configuration
+nav_order: 3
+---
+
+# Configuration
+
+[← dsh-netguard docs](index.md)
+
+
+```yaml
+- id: dsh-netguard
+  name: 'dsh-netguard'
+  config:
+    mode: audit                          # or enforce
+    allow: ['**.github.com', '*.example.com', 'registry.npmjs.org:443']
+    deny: ['*.internal.example']
+    allowPrivateAddresses: []            # CIDR blocks; see below
+    policyFile: ./.dsh-netguard.yml      # optional, lowest trust
+    spoolPath: /var/log/dsh/netguard.ocsf.jsonl    # absolute; two sidecars sit beside it
+    hostMemoryPath: /var/log/dsh/netguard.hosts    # absolute; default <spoolPath>.hosts
+    fetchProviderId: dsh-netguard        # what web.fetchProvider has to name
+    searchProviderId: dsh-netguard       # what web.searchProvider would have to name
+    vendorName: dsh-security-plugins     # metadata.product.vendor_name
+    extension:
+      name: dsh                          # keys the extension-owned attributes object
+      placement: unmapped                # or `attribute`, which puts it at the top level
+      uid: 999                           # omit until the OCSF registry assigns you one
+    fetch:
+      enabled: true
+      timeoutMs: 30000
+      maxRedirects: 5
+      maxResponseBytes: 5000000
+      maxBodyChars: 100000
+      maxUrlLength: 2048
+      userAgent: 'dsh-netguard/0.1.0 (+https://github.com/CharlotteN7/dsh-netguard)'
+    search:
+      enabled: true
+      maxQueryLength: 2048               # past this a query is denied unscanned
+      delegate:                          # absent = the search provider stays unusable
+        module: '@deepseek-ai/dsh-web-search-exa'
+        export: 'ExaSearchProvider'
+        options: { apiKey: '...', baseURL: 'https://api.exa.ai', searchType: auto, highlightsPerResult: 1 }
+    hmacKey: { source: ephemeral }       # or { source: env, variable: NETGUARD_KEY }
+    fleet:
+      tenantUid: acme
+      labels: [prod]
+      tags: { team: security }           # metadata.tags[]
+      installUid: laptop-7               # skips the sidecar entirely when you set it
+      installUidPath: /var/log/dsh/netguard.install-uid   # absolute; default $DSH_HOME/install-uid
+```
+
+**Every path is required to be absolute.** A relative one resolves against the process's working
+directory, which for `dsh` is the workspace — the same directory the repo-local policy tier is
+defended against — so a relative `spoolPath` puts the audit trail somewhere the agent it records
+can rewrite. A relative path fails the mount.
+
+**Two sidecar files are created on first use:**
+
+| File | Holds | Matters because |
+|---|---|---|
+| `<spoolPath>.hosts` | every host seen, with first/last sighting and counts | `is_alert` on a first-seen host, and `report --suggest` |
+| `$DSH_HOME/install-uid` | one minted UUID | `device.uid`, which is stable across a rename and unique across a fleet imaged from one template |
+
+The uid sits under the harness home rather than beside the spool because `dsh-ocsf-forwarder`
+spools elsewhere and reads the same file: one machine has to report one `device.uid`, or every SOC
+query that groups by device splits this host in two. A uid a release up to `0.1.0` left at
+`<spoolPath>.install-uid` is read on first run and written through to the new path, so upgrading
+does not re-identify the host.
+
+Point `logrotate` at the spool only. The two sidecars are rewritten in place rather than
+appended to, and rotating them costs the installation its host memory and its `device.uid`:
+
+```
+/var/log/dsh/netguard.ocsf.jsonl {
+  weekly
+  rotate 8
+  compress
+  missingok
+  notifempty
+  copytruncate
+}
+```
+
+Set `fleet.installUid` yourself and the uid sidecar is never written. A harness home this
+process cannot write is reported on stderr and the logger and then continues with an
+in-memory uid, because losing a stable `device.uid` is a smaller loss than refusing to mount.
+
+### The pattern grammar
+
+Codex's semantics, which are the only unambiguous ones in the prior art:
+
+| Pattern | Matches |
+|---|---|
+| `example.com` | that host, and nothing else |
+| `*.example.com` | subdomains only — **never** the apex |
+| `**.example.com` | the apex **and** every subdomain |
+| `*` | everything; accepted in `allow` only |
+| `example.com:8443` | that host on that port only |
+| `[::1]`, `[::1]:443` | an IPv6 literal, always bracketed |
+
+**A deny match wins over every allow match**, across every configuration source. **An empty
+allow list denies everything**, and that is what ships.
+
+A pattern that could be read two ways is refused at load rather than widened. Refused:
+a prefix wildcard (`prod*.blob.core.windows.net` — that namespace is self-service, so the
+pattern matches names an attacker can register), a wildcard anywhere but at the front
+(`a*b.example.com`, `*.*.internal.example`, `*.internal.*`), a wildcard over a top-level domain
+(`*.com`), a wildcard over a common public suffix (`*.co.uk`), an unbracketed IPv6 literal, a
+URL, a path, or credentials. Only a leading `*.` or `**.` is a wildcard; anything else is a
+load-time error, in a deny list as much as in an allow list.
+
+The public-suffix check is an **approximation** and is one on purpose: shipping a full public
+suffix list would put a 15,000-line data file that goes stale into the trusted computing base of
+a security control. It rejects the spellings that are both easy to write and catastrophic. A
+wildcard over a self-service namespace it does not know — `*.github.io`,
+`*.blob.core.windows.net` — is accepted, and is your risk.
+
+Hosts are compared canonically on both sides. `2130706433`, `0x7f000001`, `127.1` and
+`017700000001` are all `127.0.0.1` because the hostname is read from `url.hostname` and WHATWG
+`URL` has already normalised them; `[::ffff:127.0.0.1]`, the `[::ffff:7f00:1]` spelling `URL`
+leaves behind, the deprecated `[::127.0.0.1]` form and the NAT64 prefix `[64:ff9b::7f00:1]` are
+all unwrapped to `127.0.0.1` by this package. A name is IDNA-normalised and a trailing dot is
+dropped.
+
+### Addresses that are never reachable
+
+Every resolved address is checked against a fixed table before the socket opens, and **one
+refused address refuses the whole answer** — a name with a public `A` record and an internal
+`AAAA` record reaches the internal host on any client that prefers IPv6, and picking the "good"
+one would make the outcome depend on address selection order rather than on policy.
+
+Refused: `0.0.0.0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.0.0/24`,
+`192.168/16`, `198.18/15`, `224/4`, `240/4`, `::/128`, `::1/128`, `fc00::/7`, `fe80::/10`,
+`ff00::/8`, and the cloud metadata endpoints `169.254.169.254`, `169.254.170.2`,
+`168.63.129.16`, `fd00:ec2::254`.
+
+`allowPrivateAddresses` opens named blocks for a deployment that genuinely needs an internal
+service — `['10.0.0.0/8']` for a corporate wiki, `['127.0.0.1/32']` for a local fixture.
+harden-runner allowlists RFC1918 by default; for an agent on a developer's own machine or a
+build host that is the wrong call, so nothing is reachable here unless you name it. **The cloud
+metadata endpoints and the whole link-local range cannot be opened at all**: an entry that
+overlaps them is a load-time error, because an agent that can reach `169.254.169.254` holds the
+host's cloud role.
+
+### Configuration trust ranking
+
+| Rank | Source | May |
+|---|---|---|
+| 1 | invariants compiled into the package | everything; not configurable |
+| 2 | `cordis.yml` / bundle patch config | set every field |
+| 3 | `policyFile` — a repo-local YAML file | **tighten only** |
+
+Rank 3 is attacker-controlled: a hostile repository ships one, and a prompt-injected agent can
+write one. It may add deny patterns and raise `audit` to `enforce`. That is all:
+
+```yaml
+v: 1
+addDeny: ['*.internal.example', 'paste.example']
+enforce: true
+```
+
+There is no `allow`, no way to open an address range, no way to name the spool, and
+`enforce: false` is an error rather than an ignored key. Any other key, and any downgrade, makes
+the **whole file invalid**: it is reported on `process.stderr` and the deployment's logger, then
+ignored, never obeyed in part. A missing file is not an error — the recommended `policyFile` is
+workspace-relative, so failing the mount would stop `dsh` from starting in every repository
+without one, and would let a hostile repository remove the control by shipping a broken file.
+
+The file is parsed with `js-yaml` under `JSON_SCHEMA`, so a `!!js/function` tag is a parse error
+rather than code execution, and it never goes near the Cordis loader.
+
+The harness takes the same line: `packages/boot/app-boot/src/index.ts:111` forbids a repo-local
+`.env` from setting `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`.

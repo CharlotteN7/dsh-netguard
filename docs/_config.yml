@@ -1,0 +1,15 @@
+title: dsh-netguard
+description: An egress policy for DeepSeek Harness — a host allowlist on web_fetch and web_search, checked at connect time.
+theme: jekyll-theme-primer
+show_downloads: false
+
+# The README lives at the repo root and is not part of the site.
+exclude:
+  - Gemfile
+  - Gemfile.lock
+
+defaults:
+  - scope:
+      path: ''
+    values:
+      layout: default
