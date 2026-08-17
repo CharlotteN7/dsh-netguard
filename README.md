@@ -55,10 +55,14 @@ row's whole `config`, so every key is restated:
     fetch: true                          # the base bundle ships this off
     searchTimeoutMs: 60000
 
+# Only if your composition mounts the shipped provider; the base bundle does not.
+- remove: [web-fetch-http]
+
 - id: dsh-netguard
   config:
     mode: audit
     allow: []
+    deny: []
     spoolPath: /var/log/dsh/netguard.ocsf.jsonl
 ```
 
