@@ -22,8 +22,11 @@ says Open and Allowed. `disposition_id: 17` (Logged) and `unmapped.dsh.enforced:
 tell a SOC that the policy would have refused it. A record claiming Refuse for a request that
 completed would be a false negative in the only direction that matters.
 
-A first-seen host for this installation, and any denial audit mode let through, set
-`is_alert: true`.
+A first-seen host for this installation, any denial audit mode let through, and a session that
+has issued `alerts.distinctUrlsPerHost` or more distinct URLs against one host all set
+`is_alert: true`. The last of those is a signal a host allowlist cannot produce on its own; the
+count rides on every fetch record as `distinct_urls`, and what it does and does not catch is in
+[the configuration reference](configuration.md).
 
 **Nothing is ever appended to the session log.** `Session.append()` offers no way to set the
 envelope's `ignorable` flag, so an out-of-repo event type is written without it and the user's
@@ -102,7 +105,8 @@ the allow list you paste into `cordis.yml`.
     "reason": "blocked-by-denylist", "rule": "deny:paste.example", "tool": "web_fetch",
     "session_id": "session-88", "call_id": "call-2", "root_call_id": "call-2",
     "turn": 1, "step": 0, "decision_id": "netguard-…", "first_seen_host": false,
-    "url_digest": "hmac-sha256:9f2a…", "url_length": 63, "has_query": true, "hop": 0
+    "url_digest": "hmac-sha256:9f2a…", "url_length": 63, "has_query": true, "hop": 0,
+    "distinct_urls": 4
   } }
 }
 ```

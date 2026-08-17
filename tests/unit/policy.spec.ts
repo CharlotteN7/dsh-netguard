@@ -104,6 +104,13 @@ describe('resolving the deployment configuration', () => {
     expect(() => resolvePolicy(base(overrides))).toThrow(new RegExp(`${name.replace('.', '\\.')} must be an absolute path`))
   })
 
+  it('refuses a fractional or negative distinct-URL threshold, and takes zero as off', () => {
+    expect(() => resolvePolicy(base({ alerts: { distinctUrlsPerHost: 1.5 } }))).toThrow(/alerts.distinctUrlsPerHost must be a non-negative integer/)
+    expect(() => resolvePolicy(base({ alerts: { distinctUrlsPerHost: -1 } }))).toThrow(/non-negative integer/)
+    expect(resolvePolicy(base({ alerts: { distinctUrlsPerHost: 0 } })).alertDistinctUrlsPerHost).toBe(0)
+    expect(resolvePolicy(base()).alertDistinctUrlsPerHost).toBe(32)
+  })
+
   it('refuses a non-positive search.maxQueryLength', () => {
     expect(() => resolvePolicy(base({ search: { maxQueryLength: 0 } }))).toThrow(/search.maxQueryLength must be a positive/)
     expect(resolvePolicy(base()).searchMaxQueryLength).toBe(2048)

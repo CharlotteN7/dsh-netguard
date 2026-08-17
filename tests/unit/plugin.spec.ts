@@ -240,6 +240,28 @@ describe('the tool-tier guard', () => {
     expect(plugin.records().every(record => dshOf(record)['enforced'] === false)).toBe(true)
   })
 
+  it('alerts on a session issuing many distinct URLs against one allowed host', async () => {
+    const plugin = await mount({
+      mode: 'audit',
+      allow: ['*'],
+      fetch: { enabled: false },
+      alerts: { distinctUrlsPerHost: 3 },
+    })
+    plugin.mounted()
+
+    for (const path of ['a', 'b', 'c']) {
+      plugin.guard(execution('web_fetch', { url: `https://counted.test/${path}` }, {
+        agent: { session: { id: 'session-1' } },
+      }))
+    }
+
+    // Every request is allowed and none is refused: the count is a signal, and
+    // the first record is already an alert because the host was new.
+    expect(plugin.records().map(record => dshOf(record)['verdict'])).toEqual(['allowed', 'allowed', 'allowed'])
+    expect(plugin.records().map(record => dshOf(record)['distinct_urls'])).toEqual([1, 2, 3])
+    expect(plugin.records().map(record => record['is_alert'])).toEqual([true, false, true])
+  })
+
   it('denies a refused host in enforce mode, with the reason the model can act on', async () => {
     const plugin = await mount({ mode: 'enforce', allow: ['good.test'] })
     plugin.mounted()

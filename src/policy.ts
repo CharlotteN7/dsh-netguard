@@ -103,6 +103,14 @@ export interface Config {
     /** Literal key; required when `source` is `literal`. */
     value?: string
   }
+  /** Thresholds that raise `is_alert` on a record without changing any verdict. */
+  alerts?: {
+    /**
+     * Distinct URLs one session may issue against one host before its records
+     * are alerts. `0` turns the signal off; the count itself is still recorded.
+     */
+    distinctUrlsPerHost?: number
+  }
   /** Fleet identity stamped into `metadata` and `device` on every record. */
   fleet?: {
     tenantUid?: string
@@ -139,6 +147,21 @@ const DEFAULT_TIMEOUT_MS = 30_000
 
 /** Redirect hops followed, each re-checked in full. */
 const DEFAULT_MAX_REDIRECTS = 5
+
+/**
+ * Distinct URLs one session may issue against one host before its records carry
+ * `is_alert`.
+ *
+ * A host allowlist cannot see an exfiltration that only ever contacts an
+ * allowed host and reads the secret back out of request metadata
+ * (CVE-2026-54316). What it can see is the request count: 32 distinct URLs
+ * against one host inside one session is well past an agent reading
+ * documentation or a handful of a repository's files, and inside the range a
+ * channel carrying even a short secret needs — one request per byte puts a
+ * 32-byte token at exactly 32 requests. It is a judgement, not a measurement,
+ * which is why it is a deployment field rather than an invariant.
+ */
+const DEFAULT_DISTINCT_URLS_PER_HOST = 32
 
 /** `User-Agent` sent on every request: an explicit product agent, never a browser disguise. */
 export const DEFAULT_USER_AGENT = 'dsh-netguard/0.1.0 (+https://github.com/CharlotteN7/dsh-netguard)'
@@ -185,6 +208,9 @@ export const Config: z<Config> = z.object({
     source: z.union(['ephemeral', 'env', 'literal'] as const).default('ephemeral'),
     variable: z.string(),
     value: z.string(),
+  }),
+  alerts: z.object({
+    distinctUrlsPerHost: z.number().default(DEFAULT_DISTINCT_URLS_PER_HOST),
   }),
   fleet: z.object({
     tenantUid: z.string(),
@@ -331,6 +357,11 @@ export interface ResolvedPolicy {
   readonly searchMaxQueryLength: number
   readonly searchDelegate: Required<SearchDelegateConfig> | undefined
   readonly hmacKey: Buffer
+  /**
+   * Distinct URLs one session may issue against one host before its records
+   * carry `is_alert`; `0` turns the signal off.
+   */
+  readonly alertDistinctUrlsPerHost: number
   readonly fleet: ResolvedFleet
   readonly extensionName: string
   readonly extensionUid: number | undefined
@@ -433,6 +464,12 @@ function assertPositive(name: string, value: number): number {
   return value
 }
 
+/** Validate one configured count, where zero is a setting rather than a mistake. */
+function assertNonNegativeInteger(name: string, value: number): number {
+  if (!Number.isInteger(value) || value < 0) throw new PolicyError(`${name} must be a non-negative integer`)
+  return value
+}
+
 /**
  * Validate one configured path.
  *
@@ -502,11 +539,7 @@ export function resolvePolicy(
       maxResponseBytes: assertPositive('fetch.maxResponseBytes', fetchConfig.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES),
       maxBodyChars: assertPositive('fetch.maxBodyChars', fetchConfig.maxBodyChars ?? DEFAULT_MAX_BODY_CHARS),
       timeoutMs: assertPositive('fetch.timeoutMs', fetchConfig.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-      maxRedirects: (() => {
-        const value = fetchConfig.maxRedirects ?? DEFAULT_MAX_REDIRECTS
-        if (!Number.isInteger(value) || value < 0) throw new PolicyError('fetch.maxRedirects must be a non-negative integer')
-        return value
-      })(),
+      maxRedirects: assertNonNegativeInteger('fetch.maxRedirects', fetchConfig.maxRedirects ?? DEFAULT_MAX_REDIRECTS),
       userAgent: fetchConfig.userAgent ?? DEFAULT_USER_AGENT,
     },
     searchEnabled: config.search?.enabled ?? true,
@@ -516,6 +549,10 @@ export function resolvePolicy(
     ),
     searchDelegate: resolveSearchDelegate(config.search?.delegate),
     hmacKey: resolveHmacKey(config, env),
+    alertDistinctUrlsPerHost: assertNonNegativeInteger(
+      'alerts.distinctUrlsPerHost',
+      config.alerts?.distinctUrlsPerHost ?? DEFAULT_DISTINCT_URLS_PER_HOST,
+    ),
     fleet: {
       tenantUid: config.fleet?.tenantUid,
       labels: labels.length === 0 ? undefined : labels,

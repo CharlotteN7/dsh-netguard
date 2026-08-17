@@ -5,10 +5,12 @@
  * resolved address, the verdict, the matched rule id and the tool name go in
  * verbatim, and the URL and the search query are reduced to a keyed digest and
  * a length. It is also where the per-process sequence number, the first-seen
- * host memory, and the tool-call join are stamped on.
+ * host memory, the distinct-URL count per session and host, and the tool-call
+ * join are stamped on.
  * @module dsh-netguard/recorder
  */
 
+import type { UrlCardinality } from './cardinality.ts'
 import type { CallIdentity, TargetCorrelator } from './correlate.ts'
 import type { FetchObservation } from './fetch-provider.ts'
 import { buildDecisionRecord, type JsonValue, type RecordEnvironment } from './ocsf.ts'
@@ -36,10 +38,24 @@ export interface RecorderOptions {
   readonly env: RecordEnvironment
   readonly sink: SpoolSink
   readonly memory: HostMemory
+  /** The bounded per-session count of distinct URLs per host. */
+  readonly cardinality: UrlCardinality
   /** The URL-or-query to tool-call join minted by the guard. */
   readonly targets: TargetCorrelator
   /** Injectable so tests get deterministic sighting timestamps. */
   readonly clock?: () => Date
+}
+
+/** What one decision contributes to the memories a record is stamped from. */
+export interface WriteOptions {
+  /** `false` keeps the host out of the host memory, and out of `report --suggest`. */
+  readonly remember?: boolean
+  /**
+   * The keyed URL digest to count toward this session's distinct-URL
+   * cardinality. Absent on every decision that is not about one URL the model
+   * asked for.
+   */
+  readonly countUrl?: string
 }
 
 /** Writes one OCSF record per decision. */
@@ -84,6 +100,10 @@ export class Recorder {
         // caused it: without this the record names an endpoint that was fine.
         ...observation.detail === undefined ? {} : { detail: observation.detail },
       },
+      // Only the URL the model asked for counts toward the cardinality signal:
+      // a redirect target is the server's choice, not the agent's, and a
+      // redirecting host could otherwise raise the alert on its visitors.
+      observation.hop === 0 ? { countUrl: url.digest } : {},
     )
   }
 
@@ -127,13 +147,13 @@ export class Recorder {
    * @param decision - the verdict fields.
    * @param identity - the calling tool.
    * @param attributes - the extension-owned attributes this decision adds.
-   * @param options - `remember: false` keeps the host out of the host memory.
+   * @param options - what this decision contributes to the two memories.
    */
   guard(
     decision: Omit<DecisionFacts, 'kind'>,
     identity: CallIdentity,
     attributes: Readonly<Record<string, JsonValue>>,
-    options: { readonly remember?: boolean } = {},
+    options: WriteOptions = {},
   ): void {
     this.#write({ ...decision, kind: 'guard' }, identity, attributes, options)
   }
@@ -151,7 +171,7 @@ export class Recorder {
     decision: DecisionFacts,
     identity: CallIdentity | undefined,
     attributes: Readonly<Record<string, JsonValue>>,
-    options: { readonly remember?: boolean } = {},
+    options: WriteOptions = {},
   ): void {
     const clock = this.#options.clock ?? (() => new Date())
     const recordable = isRecordableHost(decision.host)
@@ -159,11 +179,15 @@ export class Recorder {
     const firstSeen = options.remember === false
       ? false
       : this.#options.memory.note(host, decision.verdict, clock())
+    const distinctUrls = options.countUrl === undefined
+      ? undefined
+      : this.#options.cardinality.note(identity?.sessionId, host, options.countUrl)
     this.#seq += 1
     this.#options.sink.write(buildDecisionRecord(this.#options.env, {
       ...decision,
       host,
       firstSeen,
+      distinctUrls,
       decisionId: newDecisionId(),
       seq: this.#seq,
       ...identity === undefined

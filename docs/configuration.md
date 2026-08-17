@@ -41,6 +41,8 @@ nav_order: 3
         module: '@deepseek-ai/dsh-web-search-exa'
         export: 'ExaSearchProvider'
         options: { apiKey: '...', baseURL: 'https://api.exa.ai', searchType: auto, highlightsPerResult: 1 }
+    alerts:
+      distinctUrlsPerHost: 32            # per session, per host; 0 turns the signal off
     hmacKey: { source: ephemeral }       # or { source: env, variable: NETGUARD_KEY }
     fleet:
       tenantUid: acme
@@ -122,6 +124,33 @@ Hosts are compared canonically on both sides. `2130706433`, `0x7f000001`, `127.1
 leaves behind, the deprecated `[::127.0.0.1]` form and the NAT64 prefix `[64:ff9b::7f00:1]` are
 all unwrapped to `127.0.0.1` by this package. A name is IDNA-normalised and a trailing dot is
 dropped.
+
+### The distinct-URL signal
+
+A host allowlist cannot see an exfiltration that only ever contacts an allowed host. The shape
+CVE-2026-54316 uses is a covert storage channel (CWE-515): with `huggingface.co` allowlisted as a
+bare hostname, the secret is carried by *which* of many URLs on that one host is requested, and
+it is read back out of the vendor's own download counters. No response body is needed and no
+refused host is ever named.
+
+What is visible is the request count. Every full URL is already reduced to an HMAC digest, so
+this package counts the **distinct URL digests per session, per host**, writes the count into
+each record as `distinct_urls`, and sets `is_alert` once it reaches
+`alerts.distinctUrlsPerHost`. No verdict changes: this is a signal, in the same place
+`first_seen_host` is one.
+
+The default of 32 is a judgement, not a measurement. It is well past an agent reading
+documentation or a handful of a repository's files in one session, and inside the range a channel
+carrying even a short secret needs — one request per byte puts a 32-byte token at exactly 32
+requests. **A patient exfiltrator defeats it**: 20 URLs per session, or a channel split across
+several allowed hosts, never reaches the threshold. Set it lower to catch more and page more
+often, or to `0` to turn the alert off and keep the count.
+
+Only the URL the model asked for is counted. A redirect target is the server's choice, so a
+redirecting host cannot raise the alert on the agents that visit it. The counter holds digests,
+never URLs, and it is capped the way the tool-call join is: 64 session-and-host pairs, 256
+distinct URLs each, so a long session cannot grow it without limit — past those caps the count
+saturates and the oldest pair is dropped.
 
 ### Addresses that are never reachable
 

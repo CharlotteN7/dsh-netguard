@@ -30,6 +30,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-web'
+import { UrlCardinality } from './cardinality.ts'
 import { checkUrl } from './decide.ts'
 import { CallCorrelator, TargetCorrelator, type CallIdentity } from './correlate.ts'
 import { GuardedFetchProvider, type Resolver } from './fetch-provider.ts'
@@ -194,7 +195,8 @@ export function apply(ctx: Context, config: Config, options: ApplyOptions = {}):
   const memory = new HostMemory(policy.hostMemoryPath, onFailure)
   const calls = new CallCorrelator()
   const targets = new TargetCorrelator()
-  const recorder = new Recorder({ env: createEnvironment(policy, VERSION), sink, memory, targets })
+  const cardinality = new UrlCardinality()
+  const recorder = new Recorder({ env: createEnvironment(policy, VERSION), sink, memory, cardinality, targets })
 
   ctx.on('session/event', (_session: Session, event: SessionEvent) => {
     if (event.type === 'tool/call') {
@@ -292,6 +294,7 @@ export function apply(ctx: Context, config: Config, options: ApplyOptions = {}):
         },
         identity,
         { hop: 0, url_digest: url.digest, url_length: url.length, has_query: url.hasQuery },
+        { countUrl: url.digest },
       )
     }
     if (!denied || !enforced) return undefined

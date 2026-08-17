@@ -20,6 +20,13 @@ nav_order: 6
 - **A bare host in prose is read by a heuristic.** A token ending in a top-level label this
   package does not list — or in one that is also a common file extension — is a word, not a
   destination. `site:`, `inurl:`, `link:` and a full URL are read as destinations regardless.
+- **The distinct-URL signal is a heuristic, and a patient exfiltrator defeats it.** It raises
+  `is_alert` when one session issues more than `alerts.distinctUrlsPerHost` distinct URLs against
+  one host; a channel that stays under the threshold, spreads itself over several sessions, or
+  splits itself across several allowed hosts never trips it. It refuses nothing, it cannot tell a
+  covert channel from a crawl, and the count itself is bounded — past 256 distinct URLs for one
+  session and host it stops rising, and only the 64 most recently counted session-and-host pairs
+  are tracked at all.
 - **The tool-call join is bounded and lossy.** A record whose call the join could not match
   carries no `correlation_uid`; the two maps are capped so a long session cannot grow them
   without limit.

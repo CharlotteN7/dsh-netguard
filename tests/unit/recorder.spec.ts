@@ -2,6 +2,7 @@
 
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
+import { UrlCardinality } from '../../src/cardinality.ts'
 import { TargetCorrelator } from '../../src/correlate.ts'
 import { createEnvironment } from '../../src/ocsf.ts'
 import { Recorder } from '../../src/recorder.ts'
@@ -36,6 +37,7 @@ function recorder(overrides = {}) {
       env: createEnvironment(policy, '0.1.0', () => 1_700_000_000_000),
       sink: new SpoolSink(spoolPath, () => { throw new Error('unexpected sink failure') }),
       memory: new HostMemory(join(home, `hosts-${String(counter)}.json`), () => {}),
+      cardinality: new UrlCardinality(),
       targets,
       clock: () => new Date(1_700_000_000_000),
     }),
@@ -130,6 +132,72 @@ describe('recording a fetch decision', () => {
     fixture.recorder.fetch({ kind: 'fetch', verdict: 'allowed', enforced: true, target, hop: 0 })
 
     expect(fixture.records().map(record => dshOf(record)['first_seen_host'])).toEqual([true, false])
+  })
+
+  it('counts the distinct URLs one session issued against one host', () => {
+    const fixture = recorder()
+    for (const path of ['a', 'b', 'b']) {
+      fixture.targets.note(`https://example.com/${path}`, { toolName: 'web_fetch', callId: 'call-1', sessionId: 'session-1' })
+      fixture.recorder.fetch({
+        kind: 'fetch',
+        verdict: 'allowed',
+        enforced: true,
+        target: targetOf(`https://example.com/${path}`),
+        hop: 0,
+      })
+    }
+
+    expect(fixture.records().map(record => dshOf(record)['distinct_urls'])).toEqual([1, 2, 2])
+  })
+
+  it('raises the alert past the configured cardinality, without changing the verdict', () => {
+    const fixture = recorder({ alerts: { distinctUrlsPerHost: 3 } })
+    for (const path of ['a', 'b', 'c']) {
+      fixture.targets.note(`https://example.com/${path}`, { toolName: 'web_fetch', callId: 'call-1', sessionId: 'session-1' })
+      fixture.recorder.fetch({
+        kind: 'fetch',
+        verdict: 'allowed',
+        enforced: true,
+        rule: 'allow:*',
+        target: targetOf(`https://example.com/${path}`),
+        hop: 0,
+      })
+    }
+
+    // The first record is an alert because the host was new; the second is not;
+    // the third is, on the count alone.
+    expect(fixture.records().map(record => record['is_alert'])).toEqual([true, false, true])
+    expect(fixture.records().map(record => dshOf(record)['verdict'])).toEqual(['allowed', 'allowed', 'allowed'])
+  })
+
+  it('never raises the alert on cardinality when the deployment set the threshold to zero', () => {
+    const fixture = recorder({ alerts: { distinctUrlsPerHost: 0 } })
+    for (const path of ['a', 'b', 'c']) {
+      fixture.recorder.fetch({
+        kind: 'fetch',
+        verdict: 'allowed',
+        enforced: true,
+        target: targetOf(`https://example.com/${path}`),
+        hop: 0,
+      })
+    }
+
+    expect(fixture.records().map(record => record['is_alert'])).toEqual([true, false, false])
+    expect(fixture.records().map(record => dshOf(record)['distinct_urls'])).toEqual([1, 2, 3])
+  })
+
+  it('leaves a redirect hop out of the count, because the server chose that URL', () => {
+    const fixture = recorder()
+
+    fixture.recorder.fetch({
+      kind: 'redirect',
+      verdict: 'allowed',
+      enforced: true,
+      target: targetOf('https://example.com/second'),
+      hop: 1,
+    })
+
+    expect(dshOf(fixture.records()[0]!)).not.toHaveProperty('distinct_urls')
   })
 })
 

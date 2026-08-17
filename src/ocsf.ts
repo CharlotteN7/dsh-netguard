@@ -152,6 +152,11 @@ export interface DecisionInput {
   readonly resolvedIp?: string | undefined
   /** True the first time this installation has seen the host. */
   readonly firstSeen: boolean
+  /**
+   * Distinct URLs this session has issued against this host, when the decision
+   * is about one URL. Absent on a decision that is about a query or an argument.
+   */
+  readonly distinctUrls?: number | undefined
   readonly toolName?: string | undefined
   readonly sessionId?: string | undefined
   readonly callId?: string | undefined
@@ -227,8 +232,15 @@ export function buildDecisionRecord(env: RecordEnvironment, input: DecisionInput
     step: input.step,
     decision_id: input.decisionId,
     first_seen_host: input.firstSeen,
+    distinct_urls: input.distinctUrls,
     ...input.attributes,
   })
+  // A session that issues many distinct URLs against one allowed host is the
+  // one shape a host allowlist cannot see (ADR.md §21). It raises the alert and
+  // changes no verdict.
+  const highCardinality = policy.alertDistinctUrlsPerHost > 0
+    && input.distinctUrls !== undefined
+    && input.distinctUrls >= policy.alertDistinctUrlsPerHost
   const observables: JsonValue[] = [
     { name: 'dst_endpoint.hostname', type_id: OBSERVABLE.hostname, value: input.host },
     ...input.resolvedIp === undefined
@@ -247,7 +259,7 @@ export function buildDecisionRecord(env: RecordEnvironment, input: DecisionInput
     // A host this installation has never contacted is what an operator wants
     // paged on, in either mode; a refusal is the routine case once a policy is
     // in force.
-    is_alert: input.firstSeen || (input.verdict === 'denied' && !input.enforced),
+    is_alert: input.firstSeen || highCardinality || (input.verdict === 'denied' && !input.enforced),
     time,
     message: input.verdict === 'allowed'
       ? `netguard allowed ${input.host}`

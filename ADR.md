@@ -377,3 +377,43 @@ fails a named CI leg instead of a user's install.
 release upstream's own `^4.0.1` ranges resolve to, so the exact pin excludes nothing that exists —
 and it is the object model the harness and every plugin share, where a second copy in the tree does
 not compose.
+
+## 21. Distinct-URL cardinality is a signal, because the channel it sees is invisible to an allowlist
+
+CVE-2026-54316 is classified CWE-515, a covert storage channel, and it is the case a host
+allowlist cannot decide **by construction**: `huggingface.co` is allowlisted as a bare hostname,
+and the exfiltration is carried by *which* of many URLs on that one allowed host is requested,
+read back out of the vendor's own download counters. No response body is needed, no denied host is
+ever contacted, and every individual request is exactly what the policy permits. Nothing in the
+allow/deny evaluation can separate that traffic from ordinary use, because there is nothing about
+any one request to separate.
+
+What separates it is the count. Every full URL is already reduced to an HMAC digest for the
+record, so the distinct-URL count per `(session, host)` is available without storing or logging
+one URL: the counter holds digests. It goes into each record as `distinct_urls` and raises
+`is_alert` past `alerts.distinctUrlsPerHost`, in exactly the place `first_seen_host` already
+raises it.
+
+**It is a signal and not a block, deliberately.** A refusal at 32 URLs would refuse a repository
+walk, a documentation crawl and a package index sweep, all of which are the work; the threshold
+that stops the channel and the threshold that stops the job are the same number. The default of
+32 is a judgement rather than a measurement: past what one session's reading produces, inside
+what a channel carrying a short secret needs (one request per byte puts a 32-byte token at 32
+requests). It is a rank-2 deployment field for that reason, and `0` keeps the count and drops the
+alert.
+
+Three narrower choices inside it:
+
+- **Only hop 0 is counted.** A redirect target is the server's choice, not the agent's, so
+  counting redirect hops would let a redirecting host raise the alert on everyone who visits it.
+- **The count is per session, not per installation.** The claim is about one agent's behaviour in
+  one run; an installation-lifetime count would alert on every long-lived install eventually.
+  A record whose tool-call join missed has no session id, and those share one pair per host —
+  which can only over-count, never under-count.
+- **The state is capped like the join maps** (§6): 64 `(session, host)` pairs, 256 digests each,
+  least-recently-counted pair evicted, count saturating at the cap. Same reason as there — a
+  missed count costs a signal, an unbounded map costs the agent its memory.
+
+The honest limit is in `docs/limitations.md`: a patient exfiltrator who stays under the threshold,
+or spreads the channel across sessions or across several allowed hosts, never trips it. It raises
+the cost of the channel and leaves evidence in the lane an operator reads; it does not close it.
