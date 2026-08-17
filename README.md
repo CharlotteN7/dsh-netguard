@@ -91,7 +91,9 @@ over every allow match.
 ```
 
 Pattern grammar is Codex's: `*.example.com` is subdomains only, `**.example.com` includes the
-apex. A pattern that could be read two ways is refused at load rather than widened.
+apex. An allow entry may also scope to a path — `github.com/your-org/your-repo` grants that path
+and everything under it, re-checked on every redirect hop. A pattern that could be read two ways
+is refused at load rather than widened.
 
 [Configuration reference →](https://charlotten7.github.io/dsh-netguard/configuration.html) ·
 [What enforcement means →](https://charlotten7.github.io/dsh-netguard/enforcement.html)

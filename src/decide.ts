@@ -106,7 +106,10 @@ export function checkUrl(raw: string, policy: ResolvedPolicy): TargetCheck {
   if (url.username.length > 0 || url.password.length > 0) {
     return { kind: 'checked', target, decision: { kind: 'deny', reason: 'blocked-by-credentials' } }
   }
-  const verdict = policy.hosts.evaluate(identity, port)
+  // `url.pathname` rather than the raw text: WHATWG `URL` has already resolved
+  // `.` and `..` away, so a path grant cannot be climbed out of, and a redirect
+  // hop runs this whole function again with the hop's own path.
+  const verdict = policy.hosts.evaluate(identity, port, url.pathname)
   if (verdict.kind === 'deny') {
     return {
       kind: 'checked',

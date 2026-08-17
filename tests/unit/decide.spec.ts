@@ -49,6 +49,27 @@ describe('checking a URL', () => {
     })
   })
 
+  it('decides a path-scoped grant against the path the URL parser produced', () => {
+    const scoped = policyOf(home, { allow: ['files.example.com/org/repo'] })
+
+    expect(checkUrl('https://files.example.com/org/repo/blob/main', scoped)).toMatchObject({
+      decision: { kind: 'allow', rule: 'allow:files.example.com/org/repo' },
+    })
+    expect(checkUrl('https://files.example.com/other', scoped)).toMatchObject({
+      decision: { kind: 'deny', reason: 'blocked-by-allowlist' },
+    })
+    // `..` is resolved by WHATWG `URL` before this package sees it, so a
+    // traversal is decided as the path it actually requests.
+    expect(checkUrl('https://files.example.com/org/repo/../../admin', scoped)).toMatchObject({
+      decision: { kind: 'deny', reason: 'blocked-by-allowlist' },
+    })
+    // What `URL` leaves alone is the encoded slash, and an origin that decodes
+    // it before routing would serve a path outside the grant.
+    expect(checkUrl('https://files.example.com/org/repo/..%2f..%2fadmin', scoped)).toMatchObject({
+      decision: { kind: 'deny', reason: 'blocked-by-allowlist' },
+    })
+  })
+
   it('denies a host the deny list covers, even though the allow list also matches it', () => {
     expect(checkUrl('https://secret.example.com/', policy)).toMatchObject({
       decision: { kind: 'deny', reason: 'blocked-by-denylist', rule: 'deny:secret.example.com' },

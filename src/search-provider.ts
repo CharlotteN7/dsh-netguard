@@ -224,7 +224,11 @@ export function checkQuery(query: string, policy: ResolvedPolicy): QueryRefusal 
     return { host: HOST_MARKERS.query, port: 0, reason: 'blocked-by-query-length' }
   }
   for (const named of hostsNamedIn(query)) {
-    const verdict = policy.hosts.evaluate(named.identity, named.port)
+    // A host named in prose carries no path, and this filter is deciding
+    // whether the host itself is one the policy tolerates: a path-scoped allow
+    // entry counts as an allow for its host here, and the URL the model would
+    // then fetch is decided against the path in full.
+    const verdict = policy.hosts.evaluate(named.identity, named.port, undefined)
     if (verdict.kind === 'allow') continue
     return {
       host: named.identity.key,
@@ -266,7 +270,9 @@ export function partitionSources(
       dropped.push({ source, host: HOST_MARKERS.unparsedSource, reason: 'blocked-by-scheme' })
       continue
     }
-    const verdict = policy.hosts.evaluate(identity, effectivePort(url))
+    // A result source is a URL the model can hand straight to `web_fetch`, so
+    // it is decided against the path the same way that fetch would be.
+    const verdict = policy.hosts.evaluate(identity, effectivePort(url), url.pathname)
     if (verdict.kind === 'allow') {
       kept.push(source)
       continue

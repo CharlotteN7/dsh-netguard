@@ -274,6 +274,24 @@ describe('the tool-tier guard', () => {
     expect(dshOf(plugin.records()[0]!)).toMatchObject({ kind: 'guard', verdict: 'denied', tool: 'web_fetch' })
   })
 
+  it('decides a path-scoped entry without letting the request path into a record', async () => {
+    const plugin = await mount({ mode: 'enforce', allow: ['scoped.test/org/repo'], fetch: { enabled: false } })
+    plugin.mounted()
+
+    const allowed = plugin.guard(execution('web_fetch', { url: 'https://scoped.test/org/repo/blob/secret-file' }))
+    const refused = plugin.guard(execution('web_fetch', { url: 'https://scoped.test/other/secret-file' }))
+
+    expect(allowed).toBeUndefined()
+    expect(refused).toContain('blocked-by-allowlist')
+    expect(refused).not.toContain('secret-file')
+    // The rule id carries the configured pattern, path and all, because that is
+    // deployment text; the path the model asked for is nowhere.
+    expect(JSON.stringify(plugin.records())).not.toContain('secret-file')
+    expect(plugin.records()[0]?.['firewall_rule']).toMatchObject({ uid: 'allow:scoped.test/org/repo' })
+    expect(dshOf(plugin.records()[1]!)).toMatchObject({ verdict: 'denied', reason: 'blocked-by-allowlist' })
+    expect(plugin.records()[1]).not.toHaveProperty('firewall_rule')
+  })
+
   it('denies nothing in audit mode, and leaves the record to the provider', async () => {
     const plugin = await mount({ mode: 'audit', allow: [] })
     plugin.mounted()

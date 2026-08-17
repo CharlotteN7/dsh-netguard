@@ -30,7 +30,10 @@ harness's own uid. So:
    touches it.
 2. **Allowlisted destinations.** `github.com` on the allow list is the whole GitHub API as
    whoever `gh` is authenticated as: push to any writable repository, a gist, an issue body.
-   It is the widest entry you can add.
+   It is the widest entry you can add — a [path-scoped entry](configuration.md) such as
+   `github.com/your-org/your-repo` narrows it, and narrows nothing else. Even inside one granted
+   path, a request needs no response to carry data out: which URLs an agent asks for is itself a
+   channel, which is what the distinct-URL signal watches for and does not close.
 3. **`run_code` and `bash`**, which this release does not govern at all.
 4. **The browser.** DSH's web UI renders model-authored markdown images from any absolute
    `http(s)` URL, with no CSP anywhere in the repo, and that request is made by *your browser*,

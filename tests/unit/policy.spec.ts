@@ -53,7 +53,7 @@ describe('resolving the deployment configuration', () => {
     const policy = resolvePolicy(base())
 
     expect(policy.mode).toBe('audit')
-    expect(policy.hosts.evaluate(host('example.com'), 443)).toMatchObject({ reason: 'blocked-by-allowlist' })
+    expect(policy.hosts.evaluate(host('example.com'), 443, '/')).toMatchObject({ reason: 'blocked-by-allowlist' })
   })
 
   it('puts the host memory beside the spool unless the deployment names one', () => {
@@ -304,8 +304,8 @@ describe('the repo-local policy tier', () => {
   it('merges its deny patterns after the deployment\'s own', () => {
     const policy = resolvePolicy(base({ allow: ['*'] }), parseRepoPolicy('v: 1\naddDeny: [\'evil.test\']\n'))
 
-    expect(policy.hosts.evaluate(host('evil.test'), 443)).toMatchObject({ rule: 'deny:evil.test' })
-    expect(policy.hosts.evaluate(host('good.test'), 443).kind).toBe('allow')
+    expect(policy.hosts.evaluate(host('evil.test'), 443, '/')).toMatchObject({ rule: 'deny:evil.test' })
+    expect(policy.hosts.evaluate(host('good.test'), 443, '/').kind).toBe('allow')
   })
 })
 

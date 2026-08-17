@@ -417,3 +417,64 @@ Three narrower choices inside it:
 The honest limit is in `docs/limitations.md`: a patient exfiltrator who stays under the threshold,
 or spreads the channel across sessions or across several allowed hosts, never trips it. It raises
 the cost of the channel and leaves evidence in the lane an operator reads; it does not close it.
+
+## 22. Path-scoped allow entries, and the six refusals that make them unambiguous
+
+`hosts.ts` used to refuse any pattern containing a path, and that was the right default: a
+half-supported path syntax in a security control is worse than none. CVE-2026-54316 is the
+argument for revisiting it. `huggingface.co` allowlisted as a bare hostname is the widest grant
+the grammar could express for that host, and `huggingface.co/<org>/<repo>` is a real narrowing —
+the same complaint the README makes about `github.com` being the widest entry you can add.
+
+So an **allow** entry may carry a path. The grant is the path itself and everything under it,
+ending on a segment boundary (`/api` covers `/api/v2`, never `/apiv2`), matched case-sensitively
+because only a URL's scheme and host are case-insensitive.
+
+The design is in what it refuses. Each of these is a spelling an operator and this package could
+read differently, and the grammar's rule is that such a pattern fails at load:
+
+1. **A path on a deny entry.** A deny is host-wide; a path would make it refuse *less* than the
+   same line without one, which is the single most dangerous direction to be misread in. It also
+   keeps the rank-3 repo-local tier (§12) path-free for free, since that tier can only add denies.
+2. **A trailing slash**, and a path that is only `/`. One grant needs one spelling; `/api/` and
+   `/api` would otherwise be two ways to write the same thing, and `example.com/` would be a
+   "narrowing" that narrows nothing.
+3. **A wildcard inside the path.** A path grant is already a prefix, so `example.com/org/*` is
+   the entry without the wildcard, and `example.com/org/re*o` is the prefix-wildcard shape §13
+   refuses for hosts.
+4. **A query string or a fragment.** Matching is on the path alone. A pattern carrying `?token=`
+   would look like a constraint this package does not apply, which is worse than not accepting it.
+5. **A `.` or `..` segment.** WHATWG `URL` resolves those away before the decision, so such a
+   pattern would match nothing — silent in an allow list, exactly the failure mode the interior
+   wildcard refusal exists for.
+6. **A path on an IP address.** `10.0.0.0/8` is a CIDR block, and CIDR blocks are what an
+   operator writes in `allowPrivateAddresses` one field above. Reading it as host-plus-path would
+   compile a different policy from the one that was written.
+
+Three properties outside the grammar carry the rest of the weight:
+
+- **Per hop.** The fetch provider re-runs `checkUrl` for every redirect target, so the path is
+  re-decided on each hop and a granted path cannot be an open redirector into one that is not.
+  That needed no new code — only the path reaching `evaluate` — and `fetch-provider.spec.ts`
+  proves it with a *same-origin* 302 out of the grant, which the existing cross-origin refusal
+  does not catch.
+- **A percent-encoded slash matches nothing.** `URL` leaves `%2f` alone, and origin servers
+  disagree about whether it ends a segment. Rather than pick a reading, a request path carrying
+  one matches no path-scoped rule at all — fail closed, and the request is refused as an
+  allowlist denial.
+- **The privacy lane does not move.** A request path is attacker-influenced text and never
+  reaches a verbatim field: not `dst_endpoint.hostname`, not `observables[].value`, not
+  `message`, which still names the host and the reason only. The one place a path appears is
+  `firewall_rule.uid`, as part of the matched pattern's own source text — deployment
+  configuration, rank 2, not request text. `report --suggest` needs no change for the same
+  reason: it derives its lines from the recorded *hosts*, so no path can reach the YAML an
+  operator pastes into `cordis.yml`.
+
+Two behaviours are deliberate rather than incidental. A request to an allowed host outside its
+granted path is `blocked-by-allowlist` — no new reason word was added to a vocabulary shared with
+another product, and the advice that reason carries ("ask for the entry you need") is the right
+advice here. And a **search query naming the host is not refused**: that filter reads hosts out
+of prose, where there is no path to decide, and refusing every mention of a host the policy
+allows at one path would refuse the work rather than the attack (§16 makes the same trade). A
+result URL from a search is decided against the path in full, because the model can hand one
+straight to `web_fetch`.

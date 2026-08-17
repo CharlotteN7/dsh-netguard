@@ -100,6 +100,7 @@ Codex's semantics, which are the only unambiguous ones in the prior art:
 | `*` | everything; accepted in `allow` only |
 | `example.com:8443` | that host on that port only |
 | `[::1]`, `[::1]:443` | an IPv6 literal, always bracketed |
+| `example.com/org/repo` | that path and everything under it — **allow list only** |
 
 **A deny match wins over every allow match**, across every configuration source. **An empty
 allow list denies everything**, and that is what ships.
@@ -109,8 +110,46 @@ a prefix wildcard (`prod*.blob.core.windows.net` — that namespace is self-serv
 pattern matches names an attacker can register), a wildcard anywhere but at the front
 (`a*b.example.com`, `*.*.internal.example`, `*.internal.*`), a wildcard over a top-level domain
 (`*.com`), a wildcard over a common public suffix (`*.co.uk`), an unbracketed IPv6 literal, a
-URL, a path, or credentials. Only a leading `*.` or `**.` is a wildcard; anything else is a
+URL, or credentials. Only a leading `*.` or `**.` is a wildcard; anything else is a
 load-time error, in a deny list as much as in an allow list.
+
+### Path-scoped allow entries
+
+`github.com/your-org/your-repo` is a meaningfully narrower grant than all of `github.com`, and
+the widest entry you can write is exactly what you should not have to. An allow entry may
+therefore carry a path:
+
+```yaml
+allow:
+  - 'huggingface.co/your-org/your-model'
+  - 'github.com/your-org/your-repo'
+```
+
+The rules are as narrow as the host grammar, for the same reason — an entry that could be read
+two ways is refused at load:
+
+| | |
+|---|---|
+| What it grants | the path itself and everything under it, ending on a **segment boundary**: `example.com/api` covers `/api` and `/api/v2`, never `/apiv2` |
+| Case | **case-sensitive**, because only a URL's scheme and host are not. `example.com/Org` does not cover `/org` |
+| Traversal | `.` and `..` are resolved by the URL parser before the decision, so a path cannot be climbed out of; a request percent-encoding a slash (`..%2f`) matches **no** path-scoped entry, because the origin server may split the segments differently than this package does |
+| Query strings | not part of the grant. The decision is on the path alone, and a pattern carrying `?` is refused rather than silently ignored |
+| Redirects | re-decided per hop, so a granted path cannot be used as an open redirector into one that is not |
+| Deny entries | **host-only**. A path on a deny entry would refuse *less* than the same line without one, so it is a load-time error |
+
+Also refused: a trailing slash (`example.com/api/` — one grant, one spelling), a wildcard inside
+the path (`example.com/org/*`), a percent-encoded slash, a `.` or `..` segment (a request path
+never carries one, so the entry would match nothing), a path on the bare `*`, and a path on an IP
+address — `10.0.0.0/8` is a CIDR block in the field one above, and reading it as a path would be
+a different policy from the one you wrote.
+
+Two things a path-scoped entry does **not** do. A request to an allowed host outside its granted
+path is refused as `blocked-by-allowlist`, the same reason as a host that is not listed at all —
+the model is told to ask for the entry it needs, and the path never appears in the message or in
+a record. And a **search query** that merely names the host is not refused: the query filter
+decides whether the host is one this policy tolerates, and it has no path to decide. A result
+URL from a search *is* decided against the path, because the model can hand it straight to
+`web_fetch`. `report --suggest` is unaffected: it writes hosts, never paths.
 
 The public-suffix check is an **approximation** and is one on purpose: shipping a full public
 suffix list would put a 15,000-line data file that goes stale into the trusted computing base of

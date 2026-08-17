@@ -164,6 +164,15 @@ describe('deciding a query', () => {
     expect(checkQuery('read example.com', policyOf(home, { allow: ['other.test'] })))
       .toMatchObject({ reason: 'blocked-by-allowlist' })
   })
+
+  it('reads a path-scoped entry as an allow for its host, because a query names no path', () => {
+    // The query filter decides whether the host is one this policy tolerates.
+    // Refusing every mention of a host the policy allows at one path would
+    // refuse the work rather than the attack, and the URL the model would then
+    // fetch is still decided against the path in full.
+    expect(checkQuery('what is on example.com', policyOf(home, { allow: ['example.com/org/repo'] })))
+      .toBeUndefined()
+  })
 })
 
 describe('filtering result sources', () => {
@@ -194,6 +203,18 @@ describe('filtering result sources', () => {
     expect(dropped).toHaveLength(1)
     expect(dropped[0]).toMatchObject({ host: '(unparsed-source)', reason: 'blocked-by-invalid-url' })
     expect(JSON.stringify(dropped[0]?.host)).not.toContain('SECRET')
+  })
+
+  it('drops a source outside a path-scoped grant, because the model can fetch a result URL', () => {
+    const scoped = policyOf(home, { allow: ['good.test/org/repo'] })
+
+    const { kept, dropped } = partitionSources([
+      { url: 'https://good.test/org/repo/blob/main' },
+      { url: 'https://good.test/other' },
+    ], scoped)
+
+    expect(kept.map(source => source.url)).toEqual(['https://good.test/org/repo/blob/main'])
+    expect(dropped[0]).toMatchObject({ host: 'good.test', reason: 'blocked-by-allowlist' })
   })
 
   it('drops a source whose URL parses but names no host', () => {

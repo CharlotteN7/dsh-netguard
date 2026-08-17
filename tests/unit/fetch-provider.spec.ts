@@ -296,6 +296,29 @@ describe('redirects', () => {
       .rejects.toMatchObject({ code: 'WEB_PROVIDER_ERROR' })
   })
 
+  it('re-checks the path grant on every hop, so an allowed path is no open redirector', async () => {
+    // Same origin, so the shipped provider's cross-origin rule does not catch
+    // this one: only re-running the path decision per hop does.
+    const fixture = await serve((request, response) => {
+      if (request.url === '/org/repo') {
+        response.writeHead(302, { location: '/admin' })
+        response.end()
+        return
+      }
+      response.writeHead(200, { 'content-type': 'text/plain' })
+      response.end('secret')
+    })
+    const guard = provider(
+      { allow: [`scoped.test:${String(fixture.port)}/org/repo`] },
+      async () => [{ address: '127.0.0.1', family: 4 }],
+    )
+
+    await expect(guard.fetch.fetch({ url: `http://scoped.test:${String(fixture.port)}/org/repo` }))
+      .rejects.toThrow(/blocked-by-allowlist/)
+    expect(fixture.requests).toEqual(['/org/repo'])
+    expect(guard.observations.at(-1)).toMatchObject({ kind: 'redirect', verdict: 'denied', hop: 1 })
+  })
+
   it('refuses every hop when the budget is zero', async () => {
     const fixture = await serve((_request, response) => {
       response.writeHead(302, { location: '/next' })

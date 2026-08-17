@@ -16,6 +16,11 @@ nav_order: 6
   on a long-lived installation, and at neither sidecar; see the configuration section.
 - **No public suffix list.** The wildcard check is a documented approximation; see the grammar
   section.
+- **A path-scoped allow entry narrows the grant, not the channel.** It says which paths on a host
+  may be fetched; it says nothing about what a request to a granted path carries, and the covert
+  channel the distinct-URL signal exists for runs inside one granted path as happily as across a
+  whole host. It also does not constrain the query string, and a search query naming the host is
+  not refused by it.
 - **A query with no host in it is not filtered.** A host allowlist has nothing to decide there.
 - **A bare host in prose is read by a heuristic.** A token ending in a top-level label this
   package does not list — or in one that is also a common file extension — is a word, not a
