@@ -107,6 +107,11 @@ describe('a real agent run through the guarded fetch provider', () => {
     expect(String(withCall.metadata.correlation_uid))
       .toBe(`${String(dshOf(withCall)['session_id'])}:${String(dshOf(withCall)['call_id'])}`)
 
+    // The idempotency key is namespaced, so it cannot land on the key the
+    // forwarder mints from the session log's own sequence for the same session.
+    expect(String(withCall.metadata.uid))
+      .toBe(`${String(dshOf(withCall)['session_id'])}:netguard:${String(withCall.metadata['sequence'])}`)
+
     // The SOC lane carries the host and the address, never the query string.
     expect(JSON.stringify(records)).not.toContain('E2E_SECRET_QUERY')
     expect(String(dshOf(opened)['url_digest'])).toMatch(/^hmac-sha256:/)

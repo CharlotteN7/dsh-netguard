@@ -19,11 +19,17 @@
  * policy would have refused it. A record that claimed Refuse for a request that
  * completed would be a false negative in the only direction that matters.
  *
- * The identity scheme is `dsh-ocsf-forwarder`'s, unchanged:
- * `metadata.uid = <session>:<seq>` and
+ * The correlation key is `dsh-ocsf-forwarder`'s, unchanged:
  * `metadata.correlation_uid = <session>:<callId>`. Stamping the forwarder's own
  * correlation key onto these records is what answers *which tool call opened
  * this connection*.
+ *
+ * The idempotency key is deliberately not: `metadata.uid` is
+ * `<session>:netguard:<seq>`, where `seq` counts this package's decisions.
+ * The forwarder's is `<session>:<seq>` over the session log's own event
+ * sequence, so both packages would otherwise emit `session-88:4` for unrelated
+ * events and a SIEM told to deduplicate on `metadata.uid` would drop one of
+ * them. See ADR.md §18.
  * @module dsh-netguard/ocsf
  */
 
@@ -73,6 +79,12 @@ const RECORD_PROFILES: readonly string[] = Object.freeze(['security_control', 'h
 
 /** Version of the extension-owned attribute object, independent of the harness log format. */
 export const DSH_ATTRIBUTES_VERSION = 1
+
+/**
+ * Middle segment of `metadata.uid`, which keeps this package's idempotency keys
+ * out of the space `dsh-ocsf-forwarder` numbers from the session log.
+ */
+export const UID_NAMESPACE = 'netguard'
 
 /** A JSON value, as a record carries it. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
@@ -251,7 +263,7 @@ export function buildDecisionRecord(env: RecordEnvironment, input: DecisionInput
         : [{ name: policy.extensionName, uid: policy.extensionUid, version: env.productVersion }],
       log_provider: AGENT_NAME,
       log_name: 'netguard',
-      uid: `${input.sessionId ?? PRODUCT_NAME}:${String(input.seq)}`,
+      uid: `${input.sessionId ?? PRODUCT_NAME}:${UID_NAMESPACE}:${String(input.seq)}`,
       correlation_uid: input.callId === undefined || input.sessionId === undefined
         ? undefined
         : `${input.sessionId}:${input.callId}`,

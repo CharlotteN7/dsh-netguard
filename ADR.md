@@ -307,3 +307,25 @@ or a fixed marker, with the original value carried as a keyed digest in the exte
 attributes. `report --suggest` then applies its own `[a-z0-9._-]+` test on the way out, because
 the spool is a durable boundary this package reads back — written by other versions, appended
 to under crash — and a reader that trusts what it parsed is the same defect one layer down.
+
+## 18. `metadata.uid` is namespaced here, and left alone in `dsh-ocsf-forwarder`
+
+Both packages emitted `<session>:<seq>` as `metadata.uid`. The two `seq` values count different
+things — this package's is a per-process decision counter, the forwarder's is the session log's own
+event sequence — and both start near 1 in the same session. So `session-88:4` was the identity of
+two unrelated records, one Network Activity and one Process Activity.
+
+That is exactly the composition both READMEs sell. The forwarder's says to deduplicate on
+`metadata.uid`; this one says records from both packages can sit in one index. Follow both and the
+SIEM silently drops netguard records as duplicates of forwarder records — an audit lane losing
+evidence with nothing anywhere reporting it.
+
+This package's key is now `<session>:netguard:<seq>`. The forwarder's is unchanged, and the
+asymmetry is the decision, not an oversight: it is the older, published emitter, and changing its
+key would break deduplication for everyone already ingesting it, including on records already in an
+index. This package is `0.1.0` with no consumers, so it is the one that can afford to move. Anyone
+later "tidying" the two into one scheme would recreate the collision.
+
+`metadata.correlation_uid` stays `<session>:<callId>` in both, because there the *point* is that the
+two packages produce the same value: it is what joins a connection to the tool call that opened it.
+A shared join key and a shared idempotency key are opposite requirements.

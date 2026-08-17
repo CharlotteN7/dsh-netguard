@@ -489,11 +489,20 @@ next resume throws `SessionFormatUnsupportedError` and refuses the whole session
 is read-side with respect to the log, and an E2E assertion checks that no row in it carries one
 of our types.
 
-Each record therefore carries its own identity, using `dsh-ocsf-forwarder`'s scheme unchanged:
-`metadata.uid = <session>:<seq>` and `metadata.correlation_uid = <session>:<callId>`. That last
-one is the reason to run the two packages together: the forwarder already emits Process Activity
-1007 for every tool call, so the same key on a 4001 record answers *which tool call opened this
-connection* — at tool-call granularity, which no other harness can do.
+Each record therefore carries its own identity. `metadata.correlation_uid = <session>:<callId>`
+is `dsh-ocsf-forwarder`'s key unchanged, and it is the reason to run the two packages together:
+the forwarder already emits Process Activity 1007 for every tool call, so the same key on a 4001
+record answers *which tool call opened this connection* — at tool-call granularity, which no other
+harness can do.
+
+`metadata.uid` is deliberately **not** the forwarder's key. It is `<session>:netguard:<seq>`, where
+`seq` counts this package's decisions in this process; a decision with no session behind it uses
+`dsh-netguard` in the first slot. The forwarder's is `<session>:<seq>` over the session log's own
+event sequence. Both start near 1 in the same session, so an un-namespaced key would make
+`session-88:4` the identity of two unrelated records, and a SIEM following both READMEs —
+"deduplicate on `metadata.uid`", "records from both packages can sit in one index" — would drop the
+netguard one as a duplicate. The namespace sits in this package rather than in the forwarder's key
+because the forwarder is the established emitter with records already in indexes; see ADR.md §18.
 
 **When the join hits.** The provider is handed `{ url }` and nothing else, so the call id comes
 from the tool guard, which notes `url → identity` for the provider to look up moments later, and
@@ -509,7 +518,8 @@ name. Digested: the full URL, any search query, and any string that was supposed
 hostname and is not — as `HMAC-SHA256(key, value)` truncated to 128 bits, with the length beside
 it. The digest is stable, so a SIEM can still join on it; nobody reading the spool learns the
 value. This mirrors `dsh-ocsf-forwarder`'s lane rule exactly, so records from both packages can
-sit in one index without one of them being the leak.
+sit in one index without one of them being the leak — and `metadata.uid` is namespaced so that
+sharing an index does not make one package's records look like duplicates of the other's.
 
 "Validated" is the whole point of the word. `dst_endpoint.hostname`, `observables[].value` and
 `message` only ever carry a plain host spelling (`[a-z0-9.:_-]`) or one of these markers, and

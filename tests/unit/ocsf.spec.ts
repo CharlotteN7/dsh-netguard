@@ -74,18 +74,25 @@ describe('the record', () => {
     expect(dsh(built)['url_digest']).toBe('hmac-sha256:abcd')
   })
 
-  it('uses the forwarder\'s identity scheme, so the two packages join', () => {
+  it('uses the forwarder\'s correlation key, so the two packages join', () => {
     const built = record({ sessionId: 'session-7', callId: 'call-3', seq: 9 })
     const metadata = built['metadata'] as Record<string, unknown>
 
-    expect(metadata['uid']).toBe('session-7:9')
     expect(metadata['correlation_uid']).toBe('session-7:call-3')
+  })
+
+  it('namespaces metadata.uid, because the forwarder numbers session events into the same space', () => {
+    const metadata = record({ sessionId: 'session-7', callId: 'call-3', seq: 9 })['metadata'] as Record<string, unknown>
+
+    // `session-7:9` is the forwarder's key for the ninth event of that session,
+    // an unrelated record a SIEM deduplicating on this field would drop.
+    expect(metadata['uid']).toBe('session-7:netguard:9')
   })
 
   it('falls back to the product name in metadata.uid when no session is known', () => {
     const metadata = record({ callId: 'call-3' })['metadata'] as Record<string, unknown>
 
-    expect(metadata['uid']).toBe('dsh-netguard:1')
+    expect(metadata['uid']).toBe('dsh-netguard:netguard:1')
     expect(metadata['correlation_uid']).toBeUndefined()
   })
 
