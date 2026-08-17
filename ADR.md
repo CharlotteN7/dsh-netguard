@@ -358,3 +358,22 @@ defect being fixed.
 Persisting stays best effort, unchanged: a home this process cannot write is reported and the
 records carry a per-process uid. The forwarder's copy of this helper threw instead, which failed the
 whole mount over an unwritable sidecar; it now behaves as this one does.
+
+## 20. The harness peers are caret ranges; `@deepseek-ai/cordis` stays exact
+
+Every `@deepseek-ai/dsh-*` peer was pinned to the exact version `0.1.0-rc.6`. That made
+`npm install dsh-netguard` fail outright the moment upstream published `0.1.0-rc.7`:
+`@deepseek-ai/dsh-tools@0.1.0-rc.6` declares `@deepseek-ai/dsh-system-prompt@^0.1.0-rc.6`, which now
+resolves to rc.7, which requires `@deepseek-ai/dsh-llm@^0.1.0-rc.7` — a version the exact pin
+excludes, so `npm` refuses the whole tree with `ERESOLVE`. `pnpm` still resolved it, so
+`dsh plugin add` and CI kept passing while every `npm` user was broken.
+
+The peers are `^0.1.0-rc.6`, which is the range shape upstream uses between its own packages, so the
+tree `npm` builds around this plugin is the one the harness builds for itself. The end-to-end job
+runs against every published rc the range admits rather than one pinned version, so the next rc
+fails a named CI leg instead of a user's install.
+
+`@deepseek-ai/cordis` stays at exactly `4.0.1`. It is not part of the rc train — `4.0.1` is the only
+release upstream's own `^4.0.1` ranges resolve to, so the exact pin excludes nothing that exists —
+and it is the object model the harness and every plugin share, where a second copy in the tree does
+not compose.

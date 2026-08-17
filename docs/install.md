@@ -47,6 +47,14 @@ headless is the one the examples here use because it needs no terminal and no br
 Pin it explicitly: its npm `latest` tag still points at `0.0.1-rc.1`, so an unpinned install
 silently resolves to a much older harness.
 
+Which harness versions this package accepts: the `@deepseek-ai/dsh-*` peer ranges are
+`^0.1.0-rc.6`, so any release from that rc onwards in the `0.1.x` line satisfies them, and CI runs
+the end-to-end suite against every published rc in that range. They are ranges rather than exact
+pins because an exact pin makes `npm install dsh-netguard` fail outright once upstream publishes a
+newer rc: `npm` refuses the tree when a transitively resolved harness package demands a version
+the pin excludes. `@deepseek-ai/cordis` stays pinned at `4.0.1` — it is the object model every
+plugin and the harness share, and two copies of it do not compose.
+
 **Install from the registry or a packed tarball, not from a git spec.**
 `dsh plugin add github:CharlotteN7/dsh-netguard` resolves and writes the dependency, but `lib/`
 is a build output that git does not carry and no `prepare` script rebuilds it, so the row mounts

@@ -38,6 +38,9 @@ dsh plugin --profile <name> add dsh-netguard
 dsh --profile <name> --dump-config      # the dsh-netguard row should appear
 ```
 
+Any harness from `0.1.0-rc.6` onwards in the `0.1.x` line works: the peer ranges accept it and CI
+runs the end-to-end suite against every published rc in that range.
+
 **The composition is mandatory.** `ctx.web` has no provider priority and no last-wins rule, so
 mounting this beside another fetch provider breaks `web_fetch` outright with
 `WEB_PROVIDER_AMBIGUOUS`. Write this into the profile's `cordis.patch.yml` — a patch replaces a
