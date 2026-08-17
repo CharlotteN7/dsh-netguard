@@ -1,6 +1,6 @@
 {
   "name": "dsh-netguard",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Egress policy for DeepSeek Harness: a host allowlist on web_fetch and web_search enforced at connect time, audit-mode by default, with OCSF Network Activity records",
   "license": "MIT",
   "author": "Ivan Tyshchenko <nsof@protonmail.com>",
