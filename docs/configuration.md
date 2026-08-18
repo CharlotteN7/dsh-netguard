@@ -33,7 +33,8 @@ nav_order: 3
       maxResponseBytes: 5000000
       maxBodyChars: 100000
       maxUrlLength: 2048
-      userAgent: 'dsh-netguard/0.1.0 (+https://github.com/CharlotteN7/dsh-netguard)'
+      # default: dsh-netguard/<this package's version> (+the repository URL)
+      userAgent: 'acme-agent/2.0'
     search:
       enabled: true
       maxQueryLength: 2048               # past this a query is denied unscanned

@@ -28,6 +28,7 @@ import { overlapsUnopenable, parseCidr, type Cidr } from './address.ts'
 import { PolicyError } from './errors.ts'
 import { resolveDshHome } from './home.ts'
 import { HostPolicy } from './hosts.ts'
+import { VERSION } from './version.ts'
 
 /** Whether a decision is only recorded, or also refused. */
 export type Mode = 'audit' | 'enforce'
@@ -163,8 +164,12 @@ const DEFAULT_MAX_REDIRECTS = 5
  */
 const DEFAULT_DISTINCT_URLS_PER_HOST = 32
 
-/** `User-Agent` sent on every request: an explicit product agent, never a browser disguise. */
-export const DEFAULT_USER_AGENT = 'dsh-netguard/0.1.0 (+https://github.com/CharlotteN7/dsh-netguard)'
+/**
+ * `User-Agent` sent on every request: an explicit product agent, never a browser
+ * disguise. The version comes from the manifest, so a release cannot leave this
+ * naming an older build to every host the agent contacts.
+ */
+export const DEFAULT_USER_AGENT = `dsh-netguard/${VERSION} (+https://github.com/CharlotteN7/dsh-netguard)`
 
 /** Provider id both guarded providers register under unless a deployment renames them. */
 export const DEFAULT_PROVIDER_ID = 'dsh-netguard'

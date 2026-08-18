@@ -90,6 +90,19 @@ describe('resolving the deployment configuration', () => {
     expect(() => resolvePolicy(base({ fetch }))).toThrow(new RegExp(`fetch.${name} must be a positive`))
   })
 
+  it('sends the version this build actually is in the default user agent', () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+    ) as { version: string }
+
+    expect(resolvePolicy(base()).fetch.userAgent)
+      .toBe(`dsh-netguard/${manifest.version} (+https://github.com/CharlotteN7/dsh-netguard)`)
+  })
+
+  it('lets a deployment name its own user agent', () => {
+    expect(resolvePolicy(base({ fetch: { userAgent: 'acme-agent/2' } })).fetch.userAgent).toBe('acme-agent/2')
+  })
+
   it('refuses a fractional or negative redirect budget', () => {
     expect(() => resolvePolicy(base({ fetch: { maxRedirects: 1.5 } }))).toThrow(/non-negative integer/)
     expect(() => resolvePolicy(base({ fetch: { maxRedirects: -1 } }))).toThrow(/non-negative integer/)

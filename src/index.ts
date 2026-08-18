@@ -25,7 +25,6 @@
  * @module dsh-netguard
  */
 
-import { readFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
@@ -42,34 +41,16 @@ import { Recorder } from './recorder.ts'
 import { argumentDenialMessage, denialMessage } from './reasons.ts'
 import { checkQuery, GuardedSearchProvider, loadSearchDelegate } from './search-provider.ts'
 import { HostMemory, SpoolSink } from './sink.ts'
+import { VERSION } from './version.ts'
 
 export { Config } from './policy.ts'
+export { readPackageVersion, VERSION } from './version.ts'
 
 /** Display metadata; labels the plugin in Cordis diagnostics. */
 export const name = 'dsh-netguard'
 
 /** Services required before `apply` runs. */
 export const inject = ['web', 'tools']
-
-/**
- * This package's own version, for `metadata.product.version`.
- * @param base - the module URL the manifest is resolved against.
- * @returns the manifest's version, or `0.0.0` when there is no readable manifest.
- */
-export function readPackageVersion(base: string | URL): string {
-  let manifest: string
-  try {
-    manifest = readFileSync(new URL('../package.json', base), 'utf8')
-  } catch {
-    // ENOENT only: a consumer that vendored the module without its manifest.
-    // A record with an odd version beats a plugin that will not mount.
-    return '0.0.0'
-  }
-  return (JSON.parse(manifest) as { version?: string }).version ?? '0.0.0'
-}
-
-/** Version reported in `metadata.product.version`. */
-export const VERSION: string = readPackageVersion(import.meta.url)
 
 /** The model-facing tool this package's fetch arm governs. */
 const FETCH_TOOL = 'web_fetch'
