@@ -94,10 +94,10 @@ the allow list you paste into `cordis.yml`.
   "is_alert": false, "time": 1755300000000,
   "message": "netguard refused paste.example: blocked-by-denylist",
   "metadata": {
-    "product": { "name": "dsh-netguard", "vendor_name": "dsh-security-plugins", "version": "0.1.0" },
+    "product": { "name": "dsh-netguard", "vendor_name": "dsh-security-plugins", "version": "0.3.0" },
     "version": "1.9.0", "profiles": ["security_control", "host"],
     "log_provider": "deepseek-harness", "log_name": "netguard",
-    "uid": "session-88:4", "correlation_uid": "session-88:call-2", "sequence": 4,
+    "uid": "session-88:netguard:4", "correlation_uid": "session-88:call-2", "sequence": 4,
     "logged_time": 1755300000000
   },
   "dst_endpoint": { "hostname": "paste.example", "port": 443, "svc_name": "https" },

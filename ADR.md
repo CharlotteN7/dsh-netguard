@@ -331,8 +331,9 @@ evidence with nothing anywhere reporting it.
 This package's key is now `<session>:netguard:<seq>`. The forwarder's is unchanged, and the
 asymmetry is the decision, not an oversight: it is the older, published emitter, and changing its
 key would break deduplication for everyone already ingesting it, including on records already in an
-index. This package is `0.1.0` with no consumers, so it is the one that can afford to move. Anyone
-later "tidying" the two into one scheme would recreate the collision.
+index. This package was `0.1.0` with no consumers when the collision was found, so it is the one
+that could afford to move. Anyone later "tidying" the two into one scheme would recreate the
+collision.
 
 `metadata.correlation_uid` stays `<session>:<callId>` in both, because there the *point* is that the
 two packages produce the same value: it is what joins a connection to the tool call that opened it.

@@ -17,7 +17,7 @@ nav_order: 3
     deny: ['*.internal.example']
     allowPrivateAddresses: []            # CIDR blocks; see below
     policyFile: ./.dsh-netguard.yml      # optional, lowest trust
-    spoolPath: /var/log/dsh/netguard.ocsf.jsonl    # absolute; two sidecars sit beside it
+    spoolPath: /var/log/dsh/netguard.ocsf.jsonl    # absolute; the host memory sits beside it
     hostMemoryPath: /var/log/dsh/netguard.hosts    # absolute; default <spoolPath>.hosts
     fetchProviderId: dsh-netguard        # what web.fetchProvider has to name
     searchProviderId: dsh-netguard       # what web.searchProvider would have to name

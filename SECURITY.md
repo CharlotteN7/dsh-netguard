@@ -4,11 +4,11 @@
 
 | Version | Supported |
 |---|---|
-| 0.1.x | yes |
-| < 0.1 | no |
+| 0.3.x | yes |
+| < 0.3 | no |
 
-Only the latest published `0.1.x` receives fixes. There is no long-term-support branch while
-the package is pre-1.0.
+Only the latest published minor receives fixes — `0.3.x` today. There is no long-term-support
+branch while the package is pre-1.0.
 
 ## Reporting a vulnerability
 

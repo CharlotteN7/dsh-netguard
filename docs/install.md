@@ -62,8 +62,8 @@ and then fails to load. To install from a checkout, build first and add the tarb
 
 ```sh
 git clone https://github.com/CharlotteN7/dsh-netguard && cd dsh-netguard
-pnpm install && pnpm run build && pnpm pack
-dsh plugin --profile <name> add ./dsh-netguard-0.1.0.tgz
+pnpm install && pnpm run build && pnpm pack       # prints the tarball it wrote
+dsh plugin --profile <name> add ./dsh-netguard-0.3.0.tgz
 ```
 
 Then write the composition into the profile's `cordis.patch.yml`. **A patch REPLACES a row's
