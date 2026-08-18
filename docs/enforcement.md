@@ -84,10 +84,12 @@ cannot be enumerated inside a budget, and this scan runs synchronously inside th
 where the agent loop, the UI and every timer wait on it.
 
 The vendor's transport is not ours to govern — every shipped provider calls bare global `fetch`
-against its own configured `baseURL`. What is governed is the result: a source whose host the
-policy denies is dropped before the model sees it. A source URL that does not parse is dropped
-too, and recorded as `(unparsed-source)` with a digest — a vendor string never becomes a
-hostname in a record.
+against its own configured `baseURL`. What is governed is the result: **in `enforce` mode** a
+source whose host the policy denies is dropped before the model sees it, and the result comes back
+marked truncated. A source URL that does not parse is dropped the same way, and recorded as
+`(unparsed-source)` with a digest — a vendor string never becomes a hostname in a record. **In
+`audit` mode every source reaches the model**, each refused one recorded with
+`unmapped.dsh.enforced: false`: audit mode records, it does not remove.
 
 The guarded search provider wraps a vendor provider named in `search.delegate`, imported at
 first use. **Without a delegate it reports itself unusable**, so the profile's own search route

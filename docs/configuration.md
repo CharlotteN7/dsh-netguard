@@ -211,6 +211,15 @@ metadata endpoints and the whole link-local range cannot be opened at all**: an 
 overlaps them is a load-time error, because an agent that can reach `169.254.169.254` holds the
 host's cloud role.
 
+Overlap is tested in both directions, which rules out an entry a deployment is likely to reach
+for: `fd00:ec2::254/128` sits inside `fc00::/7`, so **IPv6 ULA cannot be opened wholesale** —
+`allowPrivateAddresses: ['fc00::/7']` fails the mount, and so does `['fd00::/8']`. Name the prefix
+the service actually sits on instead and it loads: `['fd12:3456:789a::/48']` does. The same holds
+for any block wide enough to contain an absolute entry: `169.0.0.0/8` contains the link-local range
+and two metadata endpoints, and `0.0.0.0/0` and `::/0` contain everything. That is the rule
+working — a block that wide opens the metadata endpoint along with whatever you meant by it — and
+the mount error names the block you overlapped, so the entry to write instead is a narrower one.
+
 ### Configuration trust ranking
 
 | Rank | Source | May |
