@@ -48,12 +48,17 @@ Pin it explicitly: its npm `latest` tag still points at `0.0.1-rc.1`, so an unpi
 silently resolves to a much older harness.
 
 Which harness versions this package accepts: the `@deepseek-ai/dsh-*` peer ranges are
-`^0.1.0-rc.6`, so any release from that rc onwards in the `0.1.x` line satisfies them, and CI runs
-the end-to-end suite against every published rc in that range. They are ranges rather than exact
-pins because an exact pin makes `npm install dsh-netguard` fail outright once upstream publishes a
-newer rc: `npm` refuses the tree when a transitively resolved harness package demands a version
-the pin excludes. `@deepseek-ai/cordis` stays pinned at `4.0.1` — it is the object model every
-plugin and the harness share, and two copies of it do not compose.
+`^0.1.0-rc.6`, so any release from that rc onwards in the `0.1.x` line satisfies them. They are
+ranges rather than exact pins because an exact pin makes `npm install dsh-netguard` fail outright
+once upstream publishes a newer rc: `npm` refuses the tree when a transitively resolved harness
+package demands a version the pin excludes. `@deepseek-ai/cordis` stays pinned at `4.0.1` — it is
+the object model every plugin and the harness share, and two copies of it do not compose.
+
+Which versions are *tested*: CI runs the end-to-end suite against `0.1.0-rc.6` and `0.1.0-rc.7`,
+the two the workflow matrix names. That list is written out rather than resolved from the registry
+when the job runs — a dist-tag read on the day of the build is a supply-chain input, and this is a
+security control — so an rc published later is admitted by the peer ranges but untested here until
+someone adds it.
 
 **Install from the registry or a packed tarball, not from a git spec.**
 `dsh plugin add github:CharlotteN7/dsh-netguard` resolves and writes the dependency, but `lib/`

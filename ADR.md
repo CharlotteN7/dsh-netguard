@@ -372,8 +372,11 @@ excludes, so `npm` refuses the whole tree with `ERESOLVE`. `pnpm` still resolved
 
 The peers are `^0.1.0-rc.6`, which is the range shape upstream uses between its own packages, so the
 tree `npm` builds around this plugin is the one the harness builds for itself. The end-to-end job
-runs against every published rc the range admits rather than one pinned version, so the next rc
-fails a named CI leg instead of a user's install.
+runs against a written list of rcs — `0.1.0-rc.6` and `0.1.0-rc.7` today — rather than one pinned
+version, so a break shows up as a named CI leg instead of a user's install. The list is written
+rather than resolved from the registry on purpose: a job that asks for the versions a dist-tag
+currently names makes the registry an input to a security control's test plan, and a leg that
+appears on its own is a leg nobody reviewed. Adding an rc is a commit.
 
 `@deepseek-ai/cordis` stays at exactly `4.0.1`. It is not part of the rc train — `4.0.1` is the only
 release upstream's own `^4.0.1` ranges resolve to, so the exact pin excludes nothing that exists —
