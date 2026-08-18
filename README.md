@@ -105,8 +105,9 @@ One OCSF **Network Activity (4001)** record per decision, one JSON object per li
 verdict, matched rule. Digested as HMAC-SHA256: the full URL, any search query, and any string
 that was supposed to be a hostname and is not.
 
-Records carry the same `correlation_uid` scheme `dsh-ocsf-forwarder` stamps on its Process
-Activity records, so the two together answer *which tool call opened this connection*. Nothing is
+Records carry the same `correlation_uid` scheme `dsh-ocsf-forwarder` stamps on its tool-call
+records — **HTTP Activity (4002)** for `web_fetch` and `web_search`, not the Process Activity 1007
+it gives `bash` — so the two together answer *which tool call opened this connection*. Nothing is
 ever appended to the session log.
 
 [Record format and the privacy lane →](https://charlotten7.github.io/dsh-netguard/records.html)

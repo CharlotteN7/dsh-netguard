@@ -54,9 +54,10 @@ What it is good for, stated as narrowly as it is true:
 - **It raises the cost of an injected agent** that asks a tool to fetch a URL.
 - **It answers "which tool call opened this connection"** whenever the join lands, because
   every record carries the same `correlation_uid` scheme `dsh-ocsf-forwarder` stamps on its
-  Process Activity records. The join is minted in the tool guard and looked up by the provider,
-  and it is bounded and lossy on purpose: a record whose call it could not match carries no
-  `correlation_uid` rather than a guessed one.
+  tool-call records — HTTP Activity (4002) for `web_fetch` and `web_search`, not the Process
+  Activity 1007 it gives `bash`. The join is minted in the tool guard and looked up by the
+  provider, and it is bounded and lossy on purpose: a record whose call it could not match
+  carries no `correlation_uid` rather than a guessed one.
 
 ---
 

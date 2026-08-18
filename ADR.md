@@ -320,7 +320,8 @@ to under crash — and a reader that trusts what it parsed is the same defect on
 Both packages emitted `<session>:<seq>` as `metadata.uid`. The two `seq` values count different
 things — this package's is a per-process decision counter, the forwarder's is the session log's own
 event sequence — and both start near 1 in the same session. So `session-88:4` was the identity of
-two unrelated records, one Network Activity and one Process Activity.
+two unrelated records: this package's Network Activity, and whichever record the forwarder's own
+sequence had reached.
 
 That is exactly the composition both READMEs sell. The forwarder's says to deduplicate on
 `metadata.uid`; this one says records from both packages can sit in one index. Follow both and the

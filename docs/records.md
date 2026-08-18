@@ -36,9 +36,13 @@ of our types.
 
 Each record therefore carries its own identity. `metadata.correlation_uid = <session>:<callId>`
 is `dsh-ocsf-forwarder`'s key unchanged, and it is the reason to run the two packages together:
-the forwarder already emits Process Activity 1007 for every tool call, so the same key on a 4001
-record answers *which tool call opened this connection* — at tool-call granularity, which no other
-harness can do.
+the forwarder already emits a record for every tool call, so the same key on a 4001 record answers
+*which tool call opened this connection* — at tool-call granularity, which no other harness can do.
+
+**Join against the right class.** The forwarder classes each tool by what it does, and `web_fetch`
+and `web_search` are **HTTP Activity (4002)**. Process Activity 1007 is what it gives `bash`,
+`run_code` and the other process tools, so a join written against 1007 returns nothing for the
+calls this package records.
 
 `metadata.uid` is deliberately **not** the forwarder's key. It is `<session>:netguard:<seq>`, where
 `seq` counts this package's decisions in this process; a decision with no session behind it uses
